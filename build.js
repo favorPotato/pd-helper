@@ -38,7 +38,7 @@ if (apiUrl) {
 const manifestOutput = {
   ...manifest,
   host_permissions: [
-    '*://*.instagram.com/*',
+    ...manifest.host_permissions,
     ...(apiHost ? [`https://${apiHost}/*`] : [])
   ]
 }
