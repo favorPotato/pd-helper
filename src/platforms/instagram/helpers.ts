@@ -6,7 +6,7 @@ export class UiHelper {
     private static urlCleanup: (() => void) | null = null
     private static lastStatusText = ''
 
-    static async inject(handlers: { onAnalyze: () => Promise<void> }): Promise<void> {
+    static async inject(handlers: { onAutoAnalyze: () => Promise<void>; onManualAnalyze: () => Promise<void> }): Promise<void> {
         if (!UiHelper.overlay) {
             UiHelper.overlay = new FixedOverlay()
         }
@@ -18,9 +18,14 @@ export class UiHelper {
         UiHelper.lastStatusText = statusText
         UiHelper.overlay.setStatus('instagram', statusText)
 
-        UiHelper.overlay.addButton('分析', '#0095f6', async (e) => {
+        UiHelper.overlay.addButton('自动分析', '#0095f6', async (e) => {
             e.stopPropagation()
-            await handlers.onAnalyze()
+            await handlers.onAutoAnalyze()
+        }, false)
+
+        UiHelper.overlay.addButton('手动分析', '#f57c00', async (e) => {
+            e.stopPropagation()
+            await handlers.onManualAnalyze()
         }, false)
 
         if (UiHelper.urlCleanup) {
@@ -37,6 +42,12 @@ export class UiHelper {
     static log(message: unknown) {
         if (UiHelper.overlay) {
             UiHelper.overlay.log(message)
+        }
+    }
+
+    static setButtonEnabled(text: string, enabled: boolean) {
+        if (UiHelper.overlay) {
+            UiHelper.overlay.setButtonEnabled(text, enabled)
         }
     }
 
@@ -58,6 +69,7 @@ export class UiHelper {
             }
         }
 
-        UiHelper.overlay.setButtonEnabled('分析', hasShortcode)
+        UiHelper.overlay.setButtonEnabled('自动分析', hasShortcode)
+        UiHelper.overlay.setButtonEnabled('手动分析', hasShortcode)
     }
 }
