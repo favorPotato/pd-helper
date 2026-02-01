@@ -97,6 +97,24 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         return
     }
 
+    if (request.type === 'get_ig_cookies') {
+        ;(async () => {
+            try {
+                const targetUrl = 'https://www.instagram.com'
+                const names = ['ds_user_id', 'sessionid']
+                const result: Record<string, string> = {}
+                for (const name of names) {
+                    const cookie = await chrome.cookies.get({url: targetUrl, name})
+                    if (cookie?.value) result[name] = cookie.value
+                }
+                sendResponse({ok: true, cookies: result})
+            } catch (e) {
+                sendResponse({ok: false, error: String(e)})
+            }
+        })()
+        return true
+    }
+
     if (request.type === 'cache_store_whole') {
         if (!Array.isArray(request.bytes) || request.bytes.length === 0) {
             sendResponse({ok: false, error: 'Invalid bytes format'})

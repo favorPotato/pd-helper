@@ -2,6 +2,7 @@ import {analyzeMedia} from '../../shared/api'
 import {MEDIA_PROMPT} from '../../shared/env'
 import type {ExtractResult} from '../../types'
 import type {CleanedMedia, CommentsResult} from './types'
+import {RequestHelper} from './helpers'
 
 type ScriptNode = HTMLScriptElement | null
 
@@ -17,6 +18,7 @@ type GraphData = {
         }
     }
 }
+
 
 export class Extractor {
     static getShortcode(): string | null {
@@ -61,23 +63,77 @@ export class Extractor {
         return html.substring(start, end)
     }
 
+    private static extractMentions(text: string): string[] {
+        if (!text) return []
+        const result = new Set<string>()
+        const regex = /@([A-Za-z0-9._]+)/g
+        let match: RegExpExecArray | null = regex.exec(text)
+        while (match) {
+            result.add(`@${match[1]}`)
+            match = regex.exec(text)
+        }
+        return Array.from(result)
+    }
+
+    private static extractHashtags(text: string): string[] {
+        if (!text) return []
+        const result = new Set<string>()
+        const regex = /#([A-Za-z0-9_]+)/g
+        let match: RegExpExecArray | null = regex.exec(text)
+        while (match) {
+            result.add(`#${match[1]}`)
+            match = regex.exec(text)
+        }
+        return Array.from(result)
+    }
+
+    private static mapCollaborators(raw: any): string[] {
+        if (!Array.isArray(raw)) return []
+        const names = raw
+            .map((user) => (typeof user?.username === 'string' ? user.username : ''))
+            .filter((name) => name)
+        return Array.from(new Set(names))
+    }
+
     static cleanMediaData(rawData: GraphData | null): CleanedMedia | null {
         const item = rawData?.xdt_api__v1__media__shortcode__web_info?.items?.[0]
         if (!item) return null
 
+        const captionText = item.caption?.text || ''
+        const rawMediaType = typeof item.media_type === 'number' ? item.media_type : null
+        const productType = typeof item.product_type === 'string' ? item.product_type : ''
+        const carouselCount = typeof item.carousel_media_count === 'number' ? item.carousel_media_count : null
+        const hasCarouselMedia = Array.isArray(item.carousel_media) && item.carousel_media.length > 0
+        const isCarousel =
+            rawMediaType === 8 ||
+            productType === 'carousel_container' ||
+            hasCarouselMedia ||
+            (typeof carouselCount === 'number' && carouselCount > 1)
+        const isReels = productType === 'clips' || rawMediaType === 2
         const isVideo = Array.isArray(item.video_versions) && item.video_versions.length > 0
+        const collaborators = Extractor.mapCollaborators(item.coauthor_producers)
+        const viewCount = item.view_count ?? item.play_count ?? null
+        const videoDuration = typeof item.video_duration === 'number' ? item.video_duration : null
 
         return {
             id: item.pk,
             shortcode: item.code,
+            media_type: isCarousel ? 'carousel' : isReels ? 'reels' : 'post',
             type: isVideo ? 'video' : 'image',
             media_url: isVideo ? item.video_versions[0].url : item.image_versions2?.candidates?.[0]?.url || null,
             taken_at: item.taken_at || null,
-            caption: item.caption?.text || '',
+            caption: captionText,
+            mentions: Extractor.extractMentions(captionText),
+            hashtags: Extractor.extractHashtags(captionText),
+            is_collaboration: collaborators.length > 0,
+            collaborators,
+            is_carousel: isCarousel,
+            carousel_count: carouselCount ?? (hasCarouselMedia ? item.carousel_media.length : null),
             accessibility_caption: item.accessibility_caption || '',
             like_count: item.like_count || 0,
             comment_count: item.comment_count || 0,
-            view_count: item.view_count || null,
+            view_count: viewCount,
+            video_duration: videoDuration,
             comments_disabled: item.comments_disabled === true,
             counts_hidden: item.like_and_view_counts_disabled === true,
             location: item.location
@@ -91,7 +147,11 @@ export class Extractor {
                 id: item.user?.pk ?? null,
                 username: item.user?.username ?? null,
                 full_name: item.user?.full_name || '',
-                is_verified: item.user?.is_verified || false
+                is_verified: item.user?.is_verified || false,
+                followers_count: item.user?.follower_count ?? null,
+                account_location: null,
+                joined_date: null,
+                bio: item.user?.biography ?? null
             }
         }
     }
@@ -137,24 +197,10 @@ export class Extractor {
         }
 
         try {
-            const url = `https://www.instagram.com/p/${shortcode}/`
-            const response = await fetch(url, {
-                headers: {
-                    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
-                },
-                referrer: url,
-                method: 'GET',
-                mode: 'cors',
-                credentials: 'include'
-            })
-
-            if (!response.ok) {
-                console.error('请求失败:', response.status)
+            const html = await RequestHelper.fetchPostHtml(shortcode)
+            if (!html) {
                 return {shortcodeWebInfo, commentsConnection, fetchFailed: true}
             }
-
-
-            const html = await response.text()
             return {
                 shortcodeWebInfo: shortcodeWebInfo || Extractor.extractScriptContent(html, 'xdt_api__v1__media__shortcode__web_info'),
                 commentsConnection: commentsConnection || Extractor.extractScriptContent(html, 'xdt_api__v1__media__media_id__comments__connection'),
@@ -182,6 +228,35 @@ export class Extractor {
             const rawData = Extractor.extractDataFromScript(shortcodeWebInfo)
             if (rawData) {
                 mediaData = Extractor.cleanMediaData(rawData)
+            }
+        }
+
+        if (mediaData?.author) {
+            const username = mediaData.author.username
+            const profile = username ? await RequestHelper.fetchProfileV1(username) : null
+            if (profile) {
+                if (!mediaData.author.id && profile.id) {
+                    mediaData.author.id = profile.id
+                }
+                if (mediaData.author.followers_count === null && profile.followersCount !== null) {
+                    mediaData.author.followers_count = profile.followersCount
+                }
+                if (mediaData.author.bio === null && profile.bio !== null) {
+                    mediaData.author.bio = profile.bio
+                }
+            }
+
+            const userId = mediaData.author.id
+            if (userId) {
+                const about = await RequestHelper.fetchAboutGql(userId)
+                if (about) {
+                    if (mediaData.author.account_location === null && about.accountLocation) {
+                        mediaData.author.account_location = about.accountLocation
+                    }
+                    if (mediaData.author.joined_date === null && about.joinedDate) {
+                        mediaData.author.joined_date = about.joinedDate
+                    }
+                }
             }
         }
 

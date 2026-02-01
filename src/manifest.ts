@@ -7,6 +7,7 @@ export default {
         'scripting',
         'downloads',
         'webRequest',
+        'cookies',
         'storage',
         'tabs',
         'activeTab'

@@ -1,5 +1,5 @@
 import {Analyzer, Extractor} from './analyzer'
-import {UiHelper} from './helpers'
+import {UiHelper, UrlHelper} from './helpers'
 import {truncateError} from '../../shared/errors'
 
 let analysisInProgress = false
@@ -10,7 +10,7 @@ async function preparePostData(): Promise<{
     shortcode: string
     postData: ExtractedPostData
 } | null> {
-    const shortcode = Extractor.getShortcode()
+    const shortcode = UrlHelper.getShortcode()
     if (!shortcode) {
         console.error('无法提取 shortcode')
         UiHelper.log('无法提取 shortcode')
