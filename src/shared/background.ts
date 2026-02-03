@@ -43,6 +43,40 @@ function delay(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms))
 }
 
+async function getOrCreateIgTab(): Promise<chrome.tabs.Tab> {
+    const tabs = await chrome.tabs.query({url: 'https://www.instagram.com/*'})
+
+    if (tabs.length > 0) {
+        return tabs[0]
+    }
+
+    return await chrome.tabs.create({
+        url: 'https://www.instagram.com/',
+        active: false
+    })
+}
+
+async function ensureIgTabReady(): Promise<{ok: true; tab: chrome.tabs.Tab} | {ok: false; reason: string; error: string}> {
+    try {
+        const tab = await getOrCreateIgTab()
+        try {
+            await waitForTabComplete(tab.id!)
+        } catch (e) {
+            return {ok: false, ...classifyIgTabError(new Error(`ig_wait_complete_failed: ${String(e)}`))}
+        }
+
+        try {
+            await ensureContentScript(tab.id!)
+        } catch (e) {
+            return {ok: false, ...classifyIgTabError(new Error(`ig_ensure_cs_failed: ${String(e)}`))}
+        }
+
+        return {ok: true, tab}
+    } catch (e) {
+        return {ok: false, ...classifyIgTabError(e)}
+    }
+}
+
 async function waitForTabComplete(tabId: number, timeoutMs = 20000): Promise<void> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
@@ -74,8 +108,8 @@ async function ensureContentScript(tabId: number): Promise<void> {
 }
 
 setupHeaderListener()
-loadHeaderCache()
-clearStaleCache()
+void loadHeaderCache()
+void clearStaleCache()
 
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     if (!request || typeof request !== 'object') return
@@ -83,7 +117,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     if (request.action === 'download') {
         if (typeof request.url !== 'string' || typeof request.filename !== 'string') return
         const msg = request as DownloadMessage
-        chrome.downloads.download({url: msg.url, filename: msg.filename})
+        void chrome.downloads.download({url: msg.url, filename: msg.filename})
         return
     }
 
@@ -183,35 +217,13 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
     if (request.type === 'prepare_ig_tab') {
         ;(async () => {
-            try {
-                let igTab: chrome.tabs.Tab | null = null
-                const tabs = await chrome.tabs.query({url: 'https://www.instagram.com/*'})
-
-                if (tabs.length > 0) {
-                    igTab = tabs[0]
-                } else {
-                    igTab = await chrome.tabs.create({
-                        url: 'https://www.instagram.com/',
-                        active: false
-                    })
-                }
-
-                try {
-                    await waitForTabComplete(igTab.id!)
-                } catch (e) {
-                    throw new Error(`ig_wait_complete_failed: ${String(e)}`)
-                }
-
-                try {
-                    await ensureContentScript(igTab.id!)
-                } catch (e) {
-                    throw new Error(`ig_ensure_cs_failed: ${String(e)}`)
-                }
-                sendResponse({ok: true, tabId: igTab.id})
-            } catch (e) {
-                const {reason, error} = classifyIgTabError(e)
-                sendResponse({ok: false, reason, error})
+            const prepared = await ensureIgTabReady()
+            if (!prepared.ok) {
+                sendResponse({ok: false, reason: prepared.reason, error: prepared.error})
+                return
             }
+
+            sendResponse({ok: true, tabId: prepared.tab.id})
         })()
         return true
     }
@@ -222,43 +234,31 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
             try {
                 const rec = await idbGet(IDB_KEY)
                 if (!rec) {
+                    releaseLock()
                     sendResponse({ok: false, reason: 'no_cached_video'})
                     return
                 }
 
-                let igTab: chrome.tabs.Tab | null = null
-                const tabs = await chrome.tabs.query({url: 'https://www.instagram.com/*'})
-
-                if (tabs.length > 0) {
-                    igTab = tabs[0]
-                } else {
-                    igTab = await chrome.tabs.create({
-                        url: 'https://www.instagram.com/',
-                        active: false
-                    })
-                }
-
-                try {
-                    await waitForTabComplete(igTab.id!)
-                } catch (e) {
-                    throw new Error(`ig_wait_complete_failed: ${String(e)}`)
-                }
-
-                try {
-                    await ensureContentScript(igTab.id!)
-                } catch (e) {
-                    throw new Error(`ig_ensure_cs_failed: ${String(e)}`)
+                const prepared = await ensureIgTabReady()
+                if (!prepared.ok) {
+                    releaseLock()
+                    sendResponse({ok: false, reason: prepared.reason, error: prepared.error})
+                    return
                 }
 
                 let result: unknown
                 try {
-                    result = await chrome.tabs.sendMessage(igTab.id!, {
+                    result = await chrome.tabs.sendMessage(prepared.tab.id!, {
                         type: 'start_upload',
                         caption
                     })
                 } catch (e) {
-                    throw new Error(`ig_send_message_failed: ${String(e)}`)
+                    releaseLock()
+                    const {reason, error} = classifyIgTabError(new Error(`ig_send_message_failed: ${String(e)}`))
+                    sendResponse({ok: false, reason, error})
+                    return
                 }
+
                 releaseLock()
                 sendResponse({ok: true, uploadResult: result})
             } catch (e) {

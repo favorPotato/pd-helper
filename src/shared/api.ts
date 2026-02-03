@@ -17,7 +17,7 @@ export async function analyzeMedia(mediaUrl: string | string[]): Promise<string 
 
     const urls = Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl]
     const imageContents = urls
-        .filter((url) => typeof url === 'string' && url.length > 0)
+        .filter((url) => url.length > 0)
         .map((url) => ({type: 'image_url', image_url: {url}, fps: 0.1}))
     if (imageContents.length === 0) return null
 

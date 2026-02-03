@@ -13,13 +13,6 @@ export interface DownloadMessage {
     filename: string
 }
 
-export interface Platform {
-    name: string
-    isMatch: (hostname: string) => boolean
-    injectButton: () => void
-    extract: () => Promise<ExtractResult>
-}
-
 export interface MediaAnalysis {
     description: string
     per_image_notes: string[] | null

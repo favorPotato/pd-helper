@@ -49,11 +49,6 @@ export class Extractor {
             }
         }
     }
-    static getShortcode(): string | null {
-        const match = window.location.pathname.match(/\/(p|reel)\/([A-Za-z0-9_-]+)\//)
-        return match ? match[2] : null
-    }
-
     static findScriptByKey(key: string): ScriptNode {
         const scripts = document.querySelectorAll<HTMLScriptElement>('script[data-sjs][type="application/json"]')
         for (const script of Array.from(scripts)) {
@@ -289,7 +284,7 @@ export class Extractor {
             return null
         }
 
-        let mediaData = null
+        let mediaData: CleanedMedia | null = null
         if (shortcodeWebInfo) {
             const rawData = Extractor.extractDataFromScript(shortcodeWebInfo)
             if (rawData) {
@@ -297,39 +292,41 @@ export class Extractor {
             }
         }
 
-        if (mediaData?.author) {
-            const username = mediaData.author.username
+        const author = mediaData?.author
+        if (author) {
+            const username = author.username
             const profile = username ? await RequestHelper.fetchProfileV1(username) : null
             if (profile) {
-                if (!mediaData.author.id && profile.id) {
-                    mediaData.author.id = profile.id
+                if (!author.id && profile.id) {
+                    author.id = profile.id
                 }
-                if (mediaData.author.followers_count === null && profile.followersCount !== null) {
-                    mediaData.author.followers_count = profile.followersCount
+                if (author.followers_count === null && profile.followersCount !== null) {
+                    author.followers_count = profile.followersCount
                 }
-                if (mediaData.author.bio === null && profile.bio !== null) {
-                    mediaData.author.bio = profile.bio
+                if (author.bio === null && profile.bio !== null) {
+                    author.bio = profile.bio
                 }
             }
 
-            const userId = mediaData.author.id
+            const userId = author.id
             if (userId) {
                 const about = await RequestHelper.fetchAboutGql(userId)
                 if (about) {
-                    if (mediaData.author.account_location === null && about.accountLocation) {
-                        mediaData.author.account_location = about.accountLocation
+                    if (author.account_location === null && about.accountLocation) {
+                        author.account_location = about.accountLocation
                     }
-                    if (mediaData.author.joined_date === null && about.joinedDate) {
-                        mediaData.author.joined_date = about.joinedDate
+                    if (author.joined_date === null && about.joinedDate) {
+                        author.joined_date = about.joinedDate
                     }
                 }
             }
         }
 
         if (
-            mediaData?.media_type === 'reels' &&
+            mediaData &&
+            mediaData.media_type === 'reels' &&
             mediaData.view_count === null &&
-            mediaData.counts_hidden === false &&
+            !mediaData.counts_hidden &&
             mediaData.id
         ) {
             const viewCount = await RequestHelper.fetchMediaInfoViewCount(mediaData.id)
@@ -349,8 +346,9 @@ export class Extractor {
             }
         }
 
-        if (mediaData?.id && commentsData.pagination.has_next_page && commentsData.pagination.end_cursor) {
-            commentsData = await Extractor.fetchMoreComments(mediaData.id, commentsData, 5)
+        const mediaId = mediaData?.id
+        if (mediaId && commentsData.pagination.has_next_page && commentsData.pagination.end_cursor) {
+            commentsData = await Extractor.fetchMoreComments(mediaId, commentsData, 5)
         }
 
         return {

@@ -32,7 +32,7 @@ export class UiHelper {
             UiHelper.urlCleanup();
         }
 
-        UiHelper.urlCleanup = UiHelper.overlay.observeUrl(async (url) => {
+        UiHelper.urlCleanup = UiHelper.overlay.observeUrl(async () => {
             await UiHelper.refreshEnabledState();
         });
 

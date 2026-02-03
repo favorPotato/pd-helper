@@ -32,7 +32,7 @@ export class UiHelper {
             UiHelper.urlCleanup()
         }
 
-        UiHelper.urlCleanup = UiHelper.overlay.observeUrl(async (url) => {
+        UiHelper.urlCleanup = UiHelper.overlay.observeUrl(async () => {
             UiHelper.refreshEnabledState()
         })
 
@@ -126,6 +126,15 @@ export class RequestHelper {
         }
     }
 
+    private static async applyAuthHeaders(headers: Record<string, string>): Promise<void> {
+        const auth = await RequestHelper.getAuthCookies()
+        if (auth?.csrftoken) headers['x-csrftoken'] = auth.csrftoken
+
+        const headerValues = await RequestHelper.getHeaderValues()
+        if (headerValues?.claim) headers['x-ig-www-claim'] = headerValues.claim
+        if (headerValues?.webSid) headers['x-web-session-id'] = headerValues.webSid
+    }
+
     static async fetchCommentsPage(
         mediaId: string,
         minId: string | null
@@ -139,12 +148,7 @@ export class RequestHelper {
             'x-requested-with': 'XMLHttpRequest'
         }
 
-        const auth = await RequestHelper.getAuthCookies()
-        if (auth?.csrftoken) headers['x-csrftoken'] = auth.csrftoken
-
-        const headerValues = await RequestHelper.getHeaderValues()
-        if (headerValues?.claim) headers['x-ig-www-claim'] = headerValues.claim
-        if (headerValues?.webSid) headers['x-web-session-id'] = headerValues.webSid
+        await RequestHelper.applyAuthHeaders(headers)
 
         try {
             const response = await fetch(url, {
@@ -253,12 +257,7 @@ export class RequestHelper {
             'x-requested-with': 'XMLHttpRequest'
         }
 
-        const auth = await RequestHelper.getAuthCookies()
-        if (auth?.csrftoken) headers['x-csrftoken'] = auth.csrftoken
-
-        const headerValues = await RequestHelper.getHeaderValues()
-        if (headerValues?.claim) headers['x-ig-www-claim'] = headerValues.claim
-        if (headerValues?.webSid) headers['x-web-session-id'] = headerValues.webSid
+        await RequestHelper.applyAuthHeaders(headers)
 
         try {
             const response = await fetch(url, {

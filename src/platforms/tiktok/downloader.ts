@@ -135,13 +135,13 @@ function extractUrlsFromNode(node: unknown): string[] {
 
     const video = asObject((o as any).video) || o
 
-    const urls: string[] = []
+    const urls: unknown[] = []
     const play = (video as any)?.playAddr?.UrlList
     const download = (video as any)?.downloadAddr?.UrlList
     if (Array.isArray(play)) urls.push(...play)
     if (Array.isArray(download)) urls.push(...download)
 
-    return urls.filter((u) => typeof u === 'string' && isValidHost(u))
+    return urls.filter((u): u is string => typeof u === 'string' && isValidHost(u))
 }
 
 function extractBitrateInfoFromNode(node: unknown): BitrateInfo[] | null {
@@ -358,7 +358,8 @@ export class Downloader {
                     const videoRes = await fetch(c.url, {credentials: 'include'})
 
                     if (!videoRes.ok) {
-                        throw new Error(`Video download failed: ${videoRes.status}`)
+                        console.warn('视频下载失败:', videoRes.status)
+                        continue
                     }
 
                     const videoBytes = await videoRes.arrayBuffer()
@@ -371,8 +372,8 @@ export class Downloader {
                         meta
                     }
                 }
-            } catch {
-                continue
+            } catch (error) {
+                console.warn('视频地址探测失败:', error)
             }
         }
 
