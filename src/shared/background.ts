@@ -101,7 +101,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         ;(async () => {
             try {
                 const targetUrl = 'https://www.instagram.com'
-                const names = ['ds_user_id', 'sessionid']
+                const names = ['ds_user_id', 'sessionid', 'csrftoken']
                 const result: Record<string, string> = {}
                 for (const name of names) {
                     const cookie = await chrome.cookies.get({url: targetUrl, name})

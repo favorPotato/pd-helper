@@ -1,4 +1,5 @@
 import {FixedOverlay} from '../../shared/ui-overlay'
+import type {CleanedComment} from './types'
 
 export class UiHelper {
     private static overlay: FixedOverlay | null = null
@@ -81,23 +82,107 @@ export class UrlHelper {
 }
 
 export class RequestHelper {
+    private static buildCommentsUrl(mediaId: string, minId: string | null): string {
+        const params = new URLSearchParams()
+        params.set('can_support_threading', 'true')
+        params.set('sort_order', 'popular')
+        if (minId) params.set('min_id', minId)
+        return `https://www.instagram.com/api/v1/media/${mediaId}/comments/?${params.toString()}`
+    }
+
     private static buildAuthorizationHeader(dsUserId: string, sessionId: string): string | null {
         if (!dsUserId || !sessionId) return null
         const payload = JSON.stringify({ds_user_id: dsUserId, sessionid: sessionId})
         return `Bearer IGT:2:${btoa(payload)}`
     }
 
-    private static async getAuthCookies(): Promise<{ds_user_id: string; sessionid: string} | null> {
+    private static async getAuthCookies(): Promise<{ds_user_id: string; sessionid: string; csrftoken: string} | null> {
         try {
             const response = await chrome.runtime.sendMessage({type: 'get_ig_cookies'})
             if (!response || response.ok !== true) return null
             const cookies = response.cookies || {}
             const dsUserId = String(cookies.ds_user_id || '')
             const sessionId = String(cookies.sessionid || '')
+            const csrfToken = String(cookies.csrftoken || '')
             if (!dsUserId || !sessionId) return null
-            return {ds_user_id: dsUserId, sessionid: sessionId}
+            return {ds_user_id: dsUserId, sessionid: sessionId, csrftoken: csrfToken}
         } catch (error) {
             console.error('获取cookies失败:', error)
+            return null
+        }
+    }
+
+    private static async getHeaderValues(): Promise<{claim: string; ajax: string; webSid: string} | null> {
+        try {
+            const response = await chrome.runtime.sendMessage({type: 'get_header_values'})
+            if (!response || typeof response !== 'object') return null
+            const claim = String((response as {claim?: string}).claim || '')
+            const ajax = String((response as {ajax?: string}).ajax || '')
+            const webSid = String((response as {webSid?: string}).webSid || '')
+            return {claim, ajax, webSid}
+        } catch (error) {
+            console.error('获取headers失败:', error)
+            return null
+        }
+    }
+
+    static async fetchCommentsPage(
+        mediaId: string,
+        minId: string | null
+    ): Promise<{comments: CleanedComment[]; nextMinId: string | null; hasMore: boolean} | null> {
+        if (!mediaId) return null
+        const url = RequestHelper.buildCommentsUrl(mediaId, minId)
+        const headers: Record<string, string> = {
+            accept: '*/*',
+            'x-asbd-id': '359341',
+            'x-ig-app-id': '936619743392459',
+            'x-requested-with': 'XMLHttpRequest'
+        }
+
+        const auth = await RequestHelper.getAuthCookies()
+        if (auth?.csrftoken) headers['x-csrftoken'] = auth.csrftoken
+
+        const headerValues = await RequestHelper.getHeaderValues()
+        if (headerValues?.claim) headers['x-ig-www-claim'] = headerValues.claim
+        if (headerValues?.webSid) headers['x-web-session-id'] = headerValues.webSid
+
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers,
+                mode: 'cors',
+                credentials: 'include'
+            })
+            if (!response.ok) return null
+            const data = (await response.json()) as {
+                comments?: Array<{
+                    text?: unknown
+                    created_at?: unknown
+                    comment_like_count?: unknown
+                    child_comment_count?: unknown
+                    user?: {username?: unknown; is_verified?: unknown}
+                }>
+                has_more_headload_comments?: unknown
+                next_min_id?: unknown
+            }
+
+            const rawComments = Array.isArray(data.comments) ? data.comments : []
+            const comments = rawComments.map((comment) => ({
+                text: typeof comment.text === 'string' ? comment.text : '',
+                created_at: typeof comment.created_at === 'number' ? comment.created_at : 0,
+                like_count: typeof comment.comment_like_count === 'number' ? comment.comment_like_count : 0,
+                reply_count: typeof comment.child_comment_count === 'number' ? comment.child_comment_count : 0,
+                author: {
+                    username: typeof comment.user?.username === 'string' ? comment.user.username : null,
+                    is_verified: comment.user?.is_verified === true
+                }
+            }))
+
+            const nextMinId = typeof data.next_min_id === 'string' && data.next_min_id ? data.next_min_id : null
+            const hasMore = data.has_more_headload_comments === true
+            return {comments, nextMinId, hasMore}
+        } catch (error) {
+            console.error('请求失败:', error)
             return null
         }
     }
@@ -113,6 +198,10 @@ export class RequestHelper {
     static buildProfileV1Url(username: string): string {
         const encoded = encodeURIComponent(username)
         return `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encoded}`
+    }
+
+    static buildMediaInfoUrl(mediaId: string): string {
+        return `https://www.instagram.com/api/v1/media/${mediaId}/info/`
     }
 
     static async fetchProfileV1(username: string): Promise<{
@@ -148,6 +237,39 @@ export class RequestHelper {
                 followersCount: typeof user?.edge_followed_by?.count === 'number' ? user.edge_followed_by.count : null,
                 bio: typeof user?.biography === 'string' ? user.biography : null
             }
+        } catch (error) {
+            console.error('请求失败:', error)
+            return null
+        }
+    }
+
+    static async fetchMediaInfoViewCount(mediaId: string): Promise<number | null> {
+        if (!mediaId) return null
+        const url = RequestHelper.buildMediaInfoUrl(mediaId)
+        const headers: Record<string, string> = {
+            accept: '*/*',
+            'x-ig-app-id': '936619743392459',
+            'x-asbd-id': '359341',
+            'x-requested-with': 'XMLHttpRequest'
+        }
+
+        const auth = await RequestHelper.getAuthCookies()
+        if (auth?.csrftoken) headers['x-csrftoken'] = auth.csrftoken
+
+        const headerValues = await RequestHelper.getHeaderValues()
+        if (headerValues?.claim) headers['x-ig-www-claim'] = headerValues.claim
+        if (headerValues?.webSid) headers['x-web-session-id'] = headerValues.webSid
+
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers,
+                credentials: 'include'
+            })
+            if (!response.ok) return null
+            const data = await response.json()
+            const item = Array.isArray(data?.items) ? data.items[0] : null
+            return typeof item?.play_count === 'number' ? item.play_count : null
         } catch (error) {
             console.error('请求失败:', error)
             return null

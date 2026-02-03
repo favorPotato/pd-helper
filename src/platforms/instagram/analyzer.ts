@@ -1,6 +1,6 @@
 import {analyzeMedia} from '../../shared/api'
 import {MEDIA_PROMPT} from '../../shared/env'
-import type {ExtractResult} from '../../types'
+import type {ExtractResult, MediaAnalysis} from '../../types'
 import type {CleanedMedia, CommentsResult} from './types'
 import {RequestHelper} from './helpers'
 
@@ -21,6 +21,34 @@ type GraphData = {
 
 
 export class Extractor {
+    private static async fetchMoreComments(
+        mediaId: string,
+        initial: CommentsResult,
+        maxPages: number
+    ): Promise<CommentsResult> {
+        if (!mediaId || maxPages <= 1) return initial
+        let pageCount = 1
+        let nextMinId = initial.pagination.end_cursor
+        let hasMore = initial.pagination.has_next_page
+        const comments = initial.comments.slice()
+
+        while (hasMore && nextMinId && pageCount < maxPages) {
+            const page = await RequestHelper.fetchCommentsPage(mediaId, nextMinId)
+            if (!page) break
+            comments.push(...page.comments)
+            nextMinId = page.nextMinId
+            hasMore = page.hasMore
+            pageCount += 1
+        }
+
+        return {
+            comments,
+            pagination: {
+                has_next_page: hasMore,
+                end_cursor: nextMinId
+            }
+        }
+    }
     static getShortcode(): string | null {
         const match = window.location.pathname.match(/\/(p|reel)\/([A-Za-z0-9_-]+)\//)
         return match ? match[2] : null
@@ -95,6 +123,39 @@ export class Extractor {
         return Array.from(new Set(names))
     }
 
+    private static pickMediaUrl(item: any): string | null {
+        const videoUrl = item?.video_versions?.[0]?.url
+        if (typeof videoUrl === 'string' && videoUrl) return videoUrl
+        const imageUrl = item?.image_versions2?.candidates?.[0]?.url
+        if (typeof imageUrl === 'string' && imageUrl) return imageUrl
+        return null
+    }
+
+    private static collectCarouselMediaUrls(raw: any): string[] {
+        if (!Array.isArray(raw)) return []
+        const urls = raw
+            .map((item) => Extractor.pickMediaUrl(item))
+            .filter((url): url is string => typeof url === 'string' && url.length > 0)
+        return Array.from(new Set(urls))
+    }
+
+    private static parseDashDuration(manifest: unknown): number | null {
+        if (typeof manifest !== 'string' || !manifest) return null
+
+        const attrMatch = /mediaPresentationDuration="([^"]+)"/.exec(manifest)
+        const raw = attrMatch?.[1] || /PT[0-9HMS.]+/i.exec(manifest)?.[0] || null
+        if (!raw) return null
+
+        const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(raw)
+        if (!match) return null
+
+        const hours = Number(match[1] || 0)
+        const minutes = Number(match[2] || 0)
+        const seconds = Number.parseFloat(match[3] || '0')
+        const total = hours * 3600 + minutes * 60 + seconds
+        return Number.isFinite(total) ? total : null
+    }
+
     static cleanMediaData(rawData: GraphData | null): CleanedMedia | null {
         const item = rawData?.xdt_api__v1__media__shortcode__web_info?.items?.[0]
         if (!item) return null
@@ -113,14 +174,17 @@ export class Extractor {
         const isVideo = Array.isArray(item.video_versions) && item.video_versions.length > 0
         const collaborators = Extractor.mapCollaborators(item.coauthor_producers)
         const viewCount = item.view_count ?? item.play_count ?? null
-        const videoDuration = typeof item.video_duration === 'number' ? item.video_duration : null
+        const videoDuration = Extractor.parseDashDuration(item.video_dash_manifest)
+        const mediaUrl = Extractor.pickMediaUrl(item)
+        const carouselMediaUrls = isCarousel ? Extractor.collectCarouselMediaUrls(item.carousel_media) : []
 
         return {
-            id: item.pk,
+            id: String(item.pk ?? ''),
             shortcode: item.code,
             media_type: isCarousel ? 'carousel' : isReels ? 'reels' : 'post',
             type: isVideo ? 'video' : 'image',
-            media_url: isVideo ? item.video_versions[0].url : item.image_versions2?.candidates?.[0]?.url || null,
+            media_url: mediaUrl,
+            media_urls: carouselMediaUrls.length > 0 ? carouselMediaUrls : null,
             taken_at: item.taken_at || null,
             caption: captionText,
             mentions: Extractor.extractMentions(captionText),
@@ -129,13 +193,16 @@ export class Extractor {
             collaborators,
             is_carousel: isCarousel,
             carousel_count: carouselCount ?? (hasCarouselMedia ? item.carousel_media.length : null),
-            accessibility_caption: item.accessibility_caption || '',
+            accessibility_caption: typeof item.accessibility_caption === 'string' && item.accessibility_caption
+                ? item.accessibility_caption
+                : null,
             like_count: item.like_count || 0,
             comment_count: item.comment_count || 0,
             view_count: viewCount,
             video_duration: videoDuration,
             comments_disabled: item.comments_disabled === true,
             counts_hidden: item.like_and_view_counts_disabled === true,
+            like_and_view_counts_disabled: item.like_and_view_counts_disabled === true,
             location: item.location
                 ? {
                     name: item.location.name || '',
@@ -144,7 +211,7 @@ export class Extractor {
                 }
                 : null,
             author: {
-                id: item.user?.pk ?? null,
+                id: item.user?.pk !== undefined && item.user?.pk !== null ? String(item.user.pk) : null,
                 username: item.user?.username ?? null,
                 full_name: item.user?.full_name || '',
                 is_verified: item.user?.is_verified || false,
@@ -163,7 +230,6 @@ export class Extractor {
         }
 
         const comments = (connection.edges || []).map((edge: any) => ({
-            id: edge.node.pk,
             text: edge.node.text,
             created_at: edge.node.created_at,
             like_count: edge.node.comment_like_count || 0,
@@ -260,6 +326,18 @@ export class Extractor {
             }
         }
 
+        if (
+            mediaData?.media_type === 'reels' &&
+            mediaData.view_count === null &&
+            mediaData.counts_hidden === false &&
+            mediaData.id
+        ) {
+            const viewCount = await RequestHelper.fetchMediaInfoViewCount(mediaData.id)
+            if (typeof viewCount === 'number') {
+                mediaData.view_count = viewCount
+            }
+        }
+
         let commentsData: CommentsResult = {
             comments: [],
             pagination: {has_next_page: false, end_cursor: null}
@@ -271,11 +349,24 @@ export class Extractor {
             }
         }
 
+        if (mediaData?.id && commentsData.pagination.has_next_page && commentsData.pagination.end_cursor) {
+            commentsData = await Extractor.fetchMoreComments(mediaData.id, commentsData, 5)
+        }
+
         return {
             media: mediaData,
             comments: commentsData.comments,
-            pagination: commentsData.pagination,
-            media_analysis: ''
+            media_analysis: {
+                description: '',
+                per_image_notes: null,
+                visual_tags: [],
+                tone: '',
+                hook_points: [],
+                text_in_image: null,
+                opening_hook: null,
+                turning_point: null,
+                highlight_moment: null
+            }
         }
     }
 
@@ -304,12 +395,64 @@ export class Extractor {
 }
 
 export class Analyzer {
-    static async callAIAnalysis(mediaUrl: string): Promise<string | null> {
-        return analyzeMedia(mediaUrl)
+    static async callAIAnalysis(mediaUrl: string | string[]): Promise<MediaAnalysis | null> {
+        const result = await analyzeMedia(mediaUrl)
+        if (!result) return null
+        return Analyzer.parseMediaAnalysis(result)
+    }
+
+    private static parseMediaAnalysis(raw: string): MediaAnalysis | null {
+        try {
+            const parsed = JSON.parse(raw) as unknown
+            if (typeof parsed === 'object' && parsed !== null && 'media_analysis' in parsed) {
+                const container = parsed as {media_analysis?: unknown}
+                const nested = Analyzer.normalizeMediaAnalysis(container.media_analysis)
+                if (nested) return nested
+            }
+            return Analyzer.normalizeMediaAnalysis(parsed)
+        } catch (error) {
+            console.error('AI分析结果解析失败:', error)
+            return null
+        }
+    }
+
+    private static normalizeMediaAnalysis(raw: unknown): MediaAnalysis | null {
+        if (typeof raw !== 'object' || raw === null) return null
+        const data = raw as Record<string, unknown>
+        const perImageNotes = Array.isArray(data.per_image_notes)
+            ? data.per_image_notes.filter((item) => typeof item === 'string')
+            : data.per_image_notes === null
+                ? null
+                : null
+        return {
+            description: typeof data.description === 'string' ? data.description : '',
+            per_image_notes: perImageNotes,
+            visual_tags: Array.isArray(data.visual_tags)
+                ? data.visual_tags.filter((item) => typeof item === 'string')
+                : [],
+            tone: typeof data.tone === 'string' ? data.tone : '',
+            hook_points: Array.isArray(data.hook_points)
+                ? data.hook_points.filter((item) => typeof item === 'string')
+                : [],
+            text_in_image: typeof data.text_in_image === 'string' ? data.text_in_image : null,
+            opening_hook: typeof data.opening_hook === 'string' ? data.opening_hook : null,
+            turning_point: typeof data.turning_point === 'string' ? data.turning_point : null,
+            highlight_moment: typeof data.highlight_moment === 'string' ? data.highlight_moment : null
+        }
+    }
+
+    private static buildOutputResult(result: ExtractResult): ExtractResult {
+        const media = result.media ? {...result.media} : null
+        if (media) {
+            delete (media as {media_url?: string | null}).media_url
+            delete (media as {media_urls?: string[] | null}).media_urls
+        }
+        const comments = result.comments.map((comment) => ({...comment}))
+        return {...result, media, comments}
     }
 
     static async downloadSuccessResult(result: ExtractResult, shortcode: string): Promise<void> {
-        const jsonOutput = JSON.stringify(result, null, 2)
+        const jsonOutput = JSON.stringify(Analyzer.buildOutputResult(result), null, 2)
         console.log('=== AI分析结果 ===\n', jsonOutput)
         await Analyzer.downloadText(`${shortcode}.txt`, jsonOutput)
     }
@@ -317,7 +460,15 @@ export class Analyzer {
     static async downloadFallbackResult(result: ExtractResult, shortcode: string, filename: string): Promise<void> {
         const output = await Analyzer.buildFallbackOutput(result)
 
-        if (result.media?.media_url) {
+        if (result.media?.media_type === 'carousel' && Array.isArray(result.media.media_urls)) {
+            const urls = result.media.media_urls
+            for (let i = 0; i < urls.length; i += 1) {
+                const url = urls[i]
+                if (!url) continue
+                const indexedFilename = Analyzer.buildIndexedFilename(filename, i + 1)
+                await Analyzer.downloadMedia(url, indexedFilename)
+            }
+        } else if (result.media?.media_url) {
             await Analyzer.downloadMedia(result.media.media_url, filename)
         }
 
@@ -326,9 +477,18 @@ export class Analyzer {
     }
 
     private static async buildFallbackOutput(result: ExtractResult): Promise<string> {
-        const instruction = '根据规则分析图片，将结果填入到 media_analysis[string]，最终只输出填充好 media_analysis 字段后的完整 json，禁止做出未要求的更改。'
+        const instruction = '根据规则分析图片，将结果填入到 media_analysis[object]，只允许修改 media_analysis 内部字段，最终只输出填充好 media_analysis 字段后的完整 json。'
 
-        return `${instruction}\n\n${MEDIA_PROMPT}\n\n${JSON.stringify(result, null, 2)}`
+        const payload = JSON.stringify(Analyzer.buildOutputResult(result), null, 2)
+        return `${instruction}\n\n${MEDIA_PROMPT}\n\n${payload}`
+    }
+
+    private static buildIndexedFilename(filename: string, index: number): string {
+        const dot = filename.lastIndexOf('.')
+        if (dot === -1) return `${filename}-${index}`
+        const base = filename.slice(0, dot)
+        const ext = filename.slice(dot)
+        return `${base}-${index}${ext}`
     }
 
     private static async downloadText(filename: string, content: string): Promise<void> {

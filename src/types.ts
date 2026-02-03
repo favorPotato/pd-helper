@@ -1,4 +1,4 @@
-import type {CleanedComment, CleanedMedia, CommentsResult} from './platforms/instagram/types'
+import type {CleanedComment, CleanedMedia} from './platforms/instagram/types'
 
 export interface ApiConfig {
     url: string
@@ -20,9 +20,20 @@ export interface Platform {
     extract: () => Promise<ExtractResult>
 }
 
+export interface MediaAnalysis {
+    description: string
+    per_image_notes: string[] | null
+    visual_tags: string[]
+    tone: string
+    hook_points: string[]
+    text_in_image: string | null
+    opening_hook: string | null
+    turning_point: string | null
+    highlight_moment: string | null
+}
+
 export interface ExtractResult {
     media: CleanedMedia | null
     comments: CleanedComment[]
-    pagination: CommentsResult['pagination']
-    media_analysis: string
+    media_analysis: MediaAnalysis
 }

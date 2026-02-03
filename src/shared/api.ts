@@ -9,11 +9,17 @@ const apiConfig: ApiConfig = {
 }
 
 
-export async function analyzeMedia(mediaUrl: string): Promise<string | null> {
+export async function analyzeMedia(mediaUrl: string | string[]): Promise<string | null> {
     if (!apiConfig.url || !apiConfig.key || !apiConfig.model) {
         console.error('缺少 API 配置')
         return null
     }
+
+    const urls = Array.isArray(mediaUrl) ? mediaUrl : [mediaUrl]
+    const imageContents = urls
+        .filter((url) => typeof url === 'string' && url.length > 0)
+        .map((url) => ({type: 'image_url', image_url: {url}, fps: 0.1}))
+    if (imageContents.length === 0) return null
 
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), apiConfig.timeout)
@@ -32,7 +38,7 @@ export async function analyzeMedia(mediaUrl: string): Promise<string | null> {
                     {
                         role: 'user',
                         content: [
-                            {type: 'image_url', image_url: {url: mediaUrl}, fps: 0.1},
+                            ...imageContents,
                             {type: 'text', text: '请按照《视频/图片解析通用规范》解析这个文件'}
                         ]
                     }

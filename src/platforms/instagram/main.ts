@@ -54,7 +54,11 @@ async function runAutoAnalysisWorkflow() {
         if (!prepared) return
         const {shortcode, postData} = prepared
 
-        const analysis = postData.media?.media_url ? await Analyzer.callAIAnalysis(postData.media.media_url) : null
+        const mediaUrls =
+            postData.media?.media_type === 'carousel' && Array.isArray(postData.media.media_urls)
+                ? postData.media.media_urls
+                : postData.media?.media_url
+        const analysis = mediaUrls ? await Analyzer.callAIAnalysis(mediaUrls) : null
 
         if (analysis) {
             postData.media_analysis = analysis
