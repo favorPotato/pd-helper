@@ -76,7 +76,7 @@ export class UiHelper {
 
 export class UrlHelper {
     static getShortcode(): string | null {
-        const match = window.location.pathname.match(/\/(p|reel)\/([A-Za-z0-9_-]+)\//)
+        const match = window.location.pathname.match(/\/(p|reels?)\/([A-Za-z0-9_-]+)\//)
         return match ? match[2] : null
     }
 }
