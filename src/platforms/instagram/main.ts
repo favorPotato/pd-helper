@@ -1,8 +1,9 @@
 import {Analyzer, Extractor} from './analyzer'
-import {UiHelper, UrlHelper} from './helpers'
+import {InstagramRequestAbortError, UiHelper, UrlHelper} from './helpers'
 import {truncateError} from '../../shared/errors'
 
 let analysisInProgress = false
+let reelsCollectionInProgress = false
 
 type ExtractedPostData = NonNullable<Awaited<ReturnType<typeof Extractor.extractPostData>>>
 
@@ -19,7 +20,9 @@ async function preparePostData(): Promise<{
 
     let postData: Awaited<ReturnType<typeof Extractor.extractPostData>>
     try {
-        postData = await Extractor.extractPostData(shortcode)
+        postData = await Extractor.extractPostData(shortcode, {
+            routeKind: UrlHelper.getCurrentMediaRouteKind()
+        })
     } catch (error) {
         const msg = truncateError(error instanceof Error ? error.message : String(error), 500)
         console.error('提取数据失败:', msg)
@@ -68,9 +71,51 @@ async function runManualAnalysisWorkflow() {
     }
 }
 
+async function runCollectReelsWorkflow() {
+    if (reelsCollectionInProgress) return
+
+    const username = UrlHelper.getUsernameFromAccountReelsPage()
+    if (!username) {
+        alert('当前页面不是账号 reels 列表页')
+        UiHelper.log('当前页面不是账号 reels 列表页')
+        return
+    }
+
+    reelsCollectionInProgress = true
+    try {
+        const log = (message: string) => {
+            console.log(`[采集reels] ${message}`)
+            UiHelper.log(message)
+        }
+
+        log(`开始采集 @${username} 的 reels...`)
+        const collected = await Analyzer.collectReelsForUsername(username, log)
+        if (!collected) {
+            alert('采集失败：无法读取账号或分页数据')
+            log('采集失败：无法读取账号或分页数据')
+            return
+        }
+
+        await Analyzer.downloadJson(collected.filename, collected.output)
+        log(`采集完成：${collected.output.meta.total_posts} 条`)
+    } catch (error) {
+        if (error instanceof InstagramRequestAbortError) {
+            alert(error.message)
+            UiHelper.log(error.message)
+            return
+        }
+        const msg = truncateError(error instanceof Error ? error.message : String(error), 500)
+        alert(`采集失败: ${msg}`)
+        UiHelper.log(`采集失败: ${msg}`)
+    } finally {
+        reelsCollectionInProgress = false
+    }
+}
+
 export function setup() {
     // 初始化UI
     void UiHelper.inject({
-        onManualAnalyze: runManualAnalysisWorkflow
+        onManualAnalyze: runManualAnalysisWorkflow,
+        onCollectReels: runCollectReelsWorkflow
     })
 }

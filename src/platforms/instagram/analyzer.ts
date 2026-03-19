@@ -1,6 +1,14 @@
 import {MEDIA_PROMPT} from '../../shared/env'
 import type {ExtractResult} from '../../types'
-import type {CleanedMedia, CommentsResult} from './types'
+import type {
+    AccountOutput,
+    CleanedMedia,
+    CollectorOutput,
+    CommentOutput,
+    CommentsResult,
+    MediaRouteKind,
+    PostOutput
+} from './types'
 import {RequestHelper} from './helpers'
 
 type ScriptNode = HTMLScriptElement | null
@@ -8,6 +16,12 @@ type ScriptNode = HTMLScriptElement | null
 type GraphData = {
     xdt_api__v1__media__shortcode__web_info?: {
         items?: Array<any>
+    }
+    xdt_api__v1__clips__home__connection_v2?: {
+        edges?: Array<{node?: {media?: any}}>
+    }
+    xdt_api__v1__clips__user__connection_v2?: {
+        edges?: Array<{node?: {media?: any}}>
     }
     xdt_api__v1__media__media_id__comments__connection?: {
         edges?: Array<any>
@@ -17,6 +31,18 @@ type GraphData = {
         }
     }
 }
+
+type ExtractOptions = {
+    routeKind?: MediaRouteKind
+    commentsMode?: 'paginate' | 'first_page_only'
+    mediaId?: string
+}
+
+const MEDIA_SCRIPT_KEYS = [
+    'xdt_api__v1__media__shortcode__web_info',
+    'xdt_api__v1__clips__home__connection_v2',
+    'xdt_api__v1__clips__user__connection_v2'
+] as const
 
 
 export class Extractor {
@@ -58,6 +84,14 @@ export class Extractor {
         return null
     }
 
+    static findScriptByKeys(keys: readonly string[]): ScriptNode {
+        for (const key of keys) {
+            const script = Extractor.findScriptByKey(key)
+            if (script) return script
+        }
+        return null
+    }
+
     static extractDataFromScript(scriptText: string): GraphData | null {
         try {
             const json = JSON.parse(scriptText)
@@ -83,6 +117,14 @@ export class Extractor {
         if (end === -1) return null
 
         return html.substring(start, end)
+    }
+
+    static extractScriptContentByKeys(html: string, keys: readonly string[]): string | null {
+        for (const key of keys) {
+            const content = Extractor.extractScriptContent(html, key)
+            if (content) return content
+        }
+        return null
     }
 
     private static extractMentions(text: string): string[] {
@@ -150,8 +192,60 @@ export class Extractor {
         return Number.isFinite(total) ? total : null
     }
 
+    private static getRawMediaItem(rawData: GraphData | null): any | null {
+        return rawData?.xdt_api__v1__media__shortcode__web_info?.items?.[0]
+            || rawData?.xdt_api__v1__clips__home__connection_v2?.edges?.[0]?.node?.media
+            || rawData?.xdt_api__v1__clips__user__connection_v2?.edges?.[0]?.node?.media
+            || null
+    }
+
+    private static pickThumbnailUrl(item: any): string | null {
+        const imageUrl = item?.image_versions2?.candidates?.[0]?.url
+        if (typeof imageUrl === 'string' && imageUrl) return imageUrl
+        const displayUrl = item?.display_uri
+        if (typeof displayUrl === 'string' && displayUrl) return displayUrl
+        return null
+    }
+
+    private static extractMusicInfo(item: any): {
+        music_id: string | null
+        music_title: string | null
+        music_artist: string | null
+        is_original_audio: boolean | null
+    } {
+        const primaryMusicInfo = item?.music_info
+        const reelsMusicInfo = item?.clips_metadata?.music_info
+        const musicInfo = primaryMusicInfo && typeof primaryMusicInfo === 'object'
+            ? primaryMusicInfo
+            : reelsMusicInfo && typeof reelsMusicInfo === 'object'
+                ? reelsMusicInfo
+                : null
+
+        const asset = musicInfo?.music_asset_info
+        if (asset && typeof asset === 'object') {
+            return {
+                music_id: asset?.audio_cluster_id !== undefined && asset?.audio_cluster_id !== null ? String(asset.audio_cluster_id) : null,
+                music_title: typeof asset?.title === 'string' ? asset.title : null,
+                music_artist: typeof asset?.display_artist === 'string' ? asset.display_artist : null,
+                is_original_audio: typeof musicInfo?.is_original_audio === 'boolean'
+                    ? musicInfo.is_original_audio
+                    : null
+            }
+        }
+
+        const originalSound = item?.original_sound_info
+        return {
+            music_id: originalSound?.audio_asset_id !== undefined && originalSound?.audio_asset_id !== null
+                ? String(originalSound.audio_asset_id)
+                : null,
+            music_title: typeof originalSound?.original_audio_title === 'string' ? originalSound.original_audio_title : null,
+            music_artist: typeof originalSound?.ig_artist?.username === 'string' ? originalSound.ig_artist.username : null,
+            is_original_audio: originalSound ? true : null
+        }
+    }
+
     static cleanMediaData(rawData: GraphData | null): CleanedMedia | null {
-        const item = rawData?.xdt_api__v1__media__shortcode__web_info?.items?.[0]
+        const item = Extractor.getRawMediaItem(rawData)
         if (!item) return null
 
         const captionText = item.caption?.text || ''
@@ -170,7 +264,9 @@ export class Extractor {
         const viewCount = item.view_count ?? item.play_count ?? null
         const videoDuration = Extractor.parseDashDuration(item.video_dash_manifest)
         const mediaUrl = Extractor.pickMediaUrl(item)
+        const thumbnailUrl = Extractor.pickThumbnailUrl(item)
         const carouselMediaUrls = isCarousel ? Extractor.collectCarouselMediaUrls(item.carousel_media) : []
+        const music = Extractor.extractMusicInfo(item)
 
         return {
             id: String(item.pk ?? ''),
@@ -190,11 +286,16 @@ export class Extractor {
             accessibility_caption: typeof item.accessibility_caption === 'string' && item.accessibility_caption
                 ? item.accessibility_caption
                 : null,
-            like_count: item.like_count || 0,
-            comment_count: item.comment_count || 0,
+            like_count: typeof item.like_count === 'number' ? item.like_count : 0,
+            comment_count: typeof item.comment_count === 'number' ? item.comment_count : 0,
             view_count: viewCount,
             video_duration: videoDuration,
-            comments_disabled: item.comments_disabled === true,
+            thumbnail_url: thumbnailUrl,
+            music_id: music.music_id,
+            music_title: music.music_title,
+            music_artist: music.music_artist,
+            is_original_audio: music.is_original_audio,
+            comments_disabled: typeof item.comments_disabled === 'boolean' ? item.comments_disabled : null,
             counts_hidden: item.like_and_view_counts_disabled === true,
             like_and_view_counts_disabled: item.like_and_view_counts_disabled === true,
             location: item.location
@@ -220,14 +321,22 @@ export class Extractor {
     static cleanCommentsData(rawData: GraphData | null): CommentsResult {
         const connection = rawData?.xdt_api__v1__media__media_id__comments__connection
         if (!connection) {
-            return {comments: [], pagination: {has_next_page: false, end_cursor: null}}
+            return {
+                comments: [],
+                pagination: {has_next_page: false, end_cursor: null}
+            }
         }
 
         const comments = (connection.edges || []).map((edge: any) => ({
+            comment_id: edge?.node?.pk !== undefined && edge?.node?.pk !== null
+                ? String(edge.node.pk)
+                : edge?.node?.id !== undefined && edge?.node?.id !== null
+                    ? String(edge.node.id)
+                    : null,
             text: edge.node.text,
             created_at: edge.node.created_at,
-            like_count: edge.node.comment_like_count || 0,
-            reply_count: edge.node.child_comment_count || 0,
+            like_count: typeof edge?.node?.comment_like_count === 'number' ? edge.node.comment_like_count : 0,
+            reply_count: typeof edge?.node?.child_comment_count === 'number' ? edge.node.child_comment_count : 0,
             author: {
                 username: edge.node.user?.username ?? null,
                 is_verified: edge.node.user?.is_verified || false
@@ -246,37 +355,62 @@ export class Extractor {
     static async fetchMissingData(
         shortcode: string,
         shortcodeWebInfo: string | null,
-        commentsConnection: string | null
+        commentsConnection: string | null,
+        routeKind: MediaRouteKind,
+        mediaId: string | null
     ): Promise<{
         shortcodeWebInfo: string | null
         commentsConnection: string | null
+        commentsPage: {comments: any[]; nextMinId: string | null; hasMore: boolean} | null
         fetchFailed: boolean
     }> {
-        if (shortcodeWebInfo && commentsConnection) {
-            return {shortcodeWebInfo, commentsConnection, fetchFailed: false}
+        const needsHtml = !shortcodeWebInfo || (routeKind !== 'reels' && !commentsConnection)
+        const shouldPrefetchComments = routeKind === 'reels' && !!mediaId
+
+        if (!needsHtml && !shouldPrefetchComments) {
+            return {shortcodeWebInfo, commentsConnection, commentsPage: null, fetchFailed: false}
         }
 
         try {
-            const html = await RequestHelper.fetchPostHtml(shortcode)
-            if (!html) {
-                return {shortcodeWebInfo, commentsConnection, fetchFailed: true}
+            const htmlPromise = needsHtml
+                ? RequestHelper.fetchPostHtml(shortcode, routeKind)
+                : Promise.resolve<string | null>(null)
+            const commentsPromise = shouldPrefetchComments && mediaId
+                ? RequestHelper.fetchCommentsPage(mediaId, null)
+                : Promise.resolve<Awaited<ReturnType<typeof RequestHelper.fetchCommentsPage>>>(null)
+
+            const [html, commentsPage] = await Promise.all([htmlPromise, commentsPromise])
+
+            if (needsHtml && !html) {
+                return {shortcodeWebInfo, commentsConnection, commentsPage, fetchFailed: true}
             }
+
+            const fetchedShortcodeWebInfo = html ? Extractor.extractScriptContentByKeys(html, MEDIA_SCRIPT_KEYS) : null
+            const fetchedCommentsConnection = html
+                ? Extractor.extractScriptContent(html, 'xdt_api__v1__media__media_id__comments__connection')
+                : null
+
             return {
-                shortcodeWebInfo: shortcodeWebInfo || Extractor.extractScriptContent(html, 'xdt_api__v1__media__shortcode__web_info'),
-                commentsConnection: commentsConnection || Extractor.extractScriptContent(html, 'xdt_api__v1__media__media_id__comments__connection'),
+                shortcodeWebInfo: commentsConnection ? (shortcodeWebInfo || fetchedShortcodeWebInfo) : (fetchedShortcodeWebInfo || shortcodeWebInfo),
+                commentsConnection: commentsConnection || fetchedCommentsConnection,
+                commentsPage,
                 fetchFailed: false
             }
         } catch (error) {
             console.error('请求失败:', error)
-            return {shortcodeWebInfo, commentsConnection, fetchFailed: true}
+            return {shortcodeWebInfo, commentsConnection, commentsPage: null, fetchFailed: true}
         }
     }
 
-    static async extractPostData(shortcode: string): Promise<ExtractResult | null> {
-        let shortcodeWebInfo = Extractor.findScriptByKey('xdt_api__v1__media__shortcode__web_info')?.textContent || null
+    static async extractPostData(shortcode: string, options: ExtractOptions = {}): Promise<ExtractResult | null> {
+        const routeKind = options.routeKind || 'p'
+        const commentsMode = options.commentsMode || 'paginate'
+        const mediaIdFromOptions = options.mediaId || null
+
+        let shortcodeWebInfo = Extractor.findScriptByKeys(MEDIA_SCRIPT_KEYS)?.textContent || null
         let commentsConnection = Extractor.findScriptByKey('xdt_api__v1__media__media_id__comments__connection')?.textContent || null
 
-        const fetched = await Extractor.fetchMissingData(shortcode, shortcodeWebInfo, commentsConnection)
+        const fetched = await Extractor.fetchMissingData(shortcode, shortcodeWebInfo, commentsConnection, routeKind, mediaIdFromOptions)
         shortcodeWebInfo = fetched.shortcodeWebInfo
         commentsConnection = fetched.commentsConnection
         if (fetched.fetchFailed) {
@@ -304,6 +438,12 @@ export class Extractor {
                 }
                 if (author.bio === null && profile.bio !== null) {
                     author.bio = profile.bio
+                }
+                if (!author.username && profile.username) {
+                    author.username = profile.username
+                }
+                if (!author.full_name && profile.fullName) {
+                    author.full_name = profile.fullName
                 }
             }
 
@@ -338,7 +478,15 @@ export class Extractor {
             comments: [],
             pagination: {has_next_page: false, end_cursor: null}
         }
-        if (commentsConnection) {
+        if (routeKind === 'reels' && fetched.commentsPage) {
+            commentsData = {
+                comments: fetched.commentsPage.comments,
+                pagination: {
+                    has_next_page: fetched.commentsPage.hasMore,
+                    end_cursor: fetched.commentsPage.nextMinId
+                }
+            }
+        } else if (commentsConnection) {
             const rawData = Extractor.extractDataFromScript(commentsConnection)
             if (rawData) {
                 commentsData = Extractor.cleanCommentsData(rawData)
@@ -346,7 +494,7 @@ export class Extractor {
         }
 
         const mediaId = mediaData?.id
-        if (mediaId && commentsData.pagination.has_next_page && commentsData.pagination.end_cursor) {
+        if (commentsMode === 'paginate' && mediaId && commentsData.pagination.has_next_page && commentsData.pagination.end_cursor) {
             commentsData = await Extractor.fetchMoreComments(mediaId, commentsData, 5)
         }
 
@@ -392,6 +540,161 @@ export class Extractor {
 }
 
 export class Analyzer {
+    private static async sleepRandom(minMs: number, maxMs: number): Promise<void> {
+        const lower = Math.max(0, Math.min(minMs, maxMs))
+        const upper = Math.max(lower, Math.max(minMs, maxMs))
+        const delay = Math.floor(Math.random() * (upper - lower + 1)) + lower
+        await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+
+    private static mapMediaType(media: CleanedMedia): 'reels' | 'image' | 'carousel' {
+        if (media.media_type === 'reels') return 'reels'
+        if (media.media_type === 'carousel') return 'carousel'
+        return media.type === 'image' ? 'image' : 'reels'
+    }
+
+    private static mapPostOutput(media: CleanedMedia): PostOutput {
+        return {
+            id: media.id,
+            shortcode: media.shortcode,
+            taken_at: media.taken_at,
+            media_type: Analyzer.mapMediaType(media),
+            view_count: media.view_count,
+            like_count: media.like_count,
+            comment_count: media.comment_count,
+            video_duration: media.video_duration,
+            caption: media.caption || null,
+            hashtags: media.hashtags,
+            mentions: media.mentions,
+            thumbnail_url: media.thumbnail_url,
+            media_url: media.media_url,
+            music_id: media.music_id ?? null,
+            music_title: media.music_title ?? null,
+            music_artist: media.music_artist ?? null,
+            is_original_audio: media.is_original_audio ?? null,
+            location: media.location?.name || null,
+            is_collaboration: media.is_collaboration,
+            comments_disabled: media.comments_disabled
+        }
+    }
+
+    private static mapCommentOutput(comment: any): CommentOutput {
+        return {
+            comment_id: typeof comment?.comment_id === 'string' ? comment.comment_id : null,
+            username: comment?.author?.username ?? null,
+            text: typeof comment?.text === 'string' ? comment.text : '',
+            created_at: typeof comment?.created_at === 'number' ? comment.created_at : 0,
+            like_count: typeof comment?.like_count === 'number' ? comment.like_count : 0
+        }
+    }
+
+    private static buildTimestampForFilename(date: Date): string {
+        const year = date.getFullYear()
+        const month = String(date.getMonth() + 1).padStart(2, '0')
+        const day = String(date.getDate()).padStart(2, '0')
+        const hour = String(date.getHours()).padStart(2, '0')
+        const minute = String(date.getMinutes()).padStart(2, '0')
+        const second = String(date.getSeconds()).padStart(2, '0')
+        return `${year}${month}${day}_${hour}${minute}${second}`
+    }
+
+    static async collectReelsForUsername(
+        username: string,
+        log: (message: string) => void
+    ): Promise<{filename: string; output: CollectorOutput} | null> {
+        const profile = await RequestHelper.fetchProfileV1(username)
+        if (!profile) return null
+
+        let accountLocation: string | null = null
+        let joinedDate: string | null = null
+        if (profile.id) {
+            const about = await RequestHelper.fetchAboutGql(profile.id)
+            accountLocation = about?.accountLocation || null
+            joinedDate = about?.joinedDate || null
+        }
+
+        const account: AccountOutput = {
+            username: profile.username,
+            full_name: profile.fullName,
+            bio: profile.bio,
+            external_url: profile.externalUrls,
+            followers_count: profile.followersCount,
+            following_count: profile.followingCount,
+            post_count: profile.postCount,
+            is_verified: profile.isVerified,
+            is_business_account: profile.isBusinessAccount,
+            account_location: accountLocation,
+            joined_date: joinedDate,
+            profile_pic_url: profile.profilePicUrl
+        }
+
+        const allItems: Array<{id: string; shortcode: string}> = []
+        const seen = new Set<string>()
+        let after: string | null = null
+        let page = 1
+
+        while (true) {
+            log(`抓取 reels 列表第 ${page} 页...`)
+            const pageResult = await RequestHelper.fetchReelsPage(profile.id || '', after)
+            if (!pageResult) break
+
+            for (const item of pageResult.items) {
+                if (seen.has(item.shortcode)) continue
+                seen.add(item.shortcode)
+                allItems.push(item)
+            }
+
+            if (!pageResult.pageInfo.has_next_page || !pageResult.pageInfo.end_cursor) break
+            after = pageResult.pageInfo.end_cursor
+            page += 1
+            await Analyzer.sleepRandom(1200, 2000)
+        }
+
+        const posts: PostOutput[] = []
+        let hasIncomplete = false
+
+        for (let index = 0; index < allItems.length; index += 1) {
+            const item = allItems[index]
+            log(`抓取详情 ${index + 1}/${allItems.length}: ${item.shortcode}`)
+            const result = await Extractor.extractPostData(item.shortcode, {
+                routeKind: 'reels',
+                commentsMode: 'first_page_only',
+                mediaId: item.id
+            })
+
+            if (!result?.media) {
+                hasIncomplete = true
+                posts.push({id: item.id, shortcode: item.shortcode, error: 'fetch_failed'})
+                continue
+            }
+
+            posts.push({
+                ...Analyzer.mapPostOutput(result.media),
+                comments: result.comments.map((comment) => Analyzer.mapCommentOutput(comment))
+            })
+
+            if (index < allItems.length - 1) {
+                await Analyzer.sleepRandom(800, 1500)
+            }
+        }
+
+        posts.sort((a, b) => (a.taken_at || 0) - (b.taken_at || 0))
+
+        const crawledAt = new Date()
+        const output: CollectorOutput = {
+            account,
+            posts,
+            meta: {
+                crawled_at: crawledAt.toISOString(),
+                total_posts: posts.length,
+                has_incomplete: hasIncomplete
+            }
+        }
+
+        const filename = `${username}_${Analyzer.buildTimestampForFilename(crawledAt)}.json`
+        return {filename, output}
+    }
+
     private static buildOutputResult(result: ExtractResult): ExtractResult {
         const media = result.media ? {...result.media} : null
         if (media) {
@@ -442,8 +745,13 @@ export class Analyzer {
         await chrome.runtime.sendMessage({action: 'download', url, filename})
     }
 
+    static async downloadJson(filename: string, data: unknown): Promise<void> {
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'})
+        const url = URL.createObjectURL(blob)
+        await chrome.runtime.sendMessage({action: 'download', url, filename})
+    }
+
     private static async downloadMedia(mediaUrl: string, filename: string): Promise<void> {
         await chrome.runtime.sendMessage({action: 'download', url: mediaUrl, filename})
     }
 }
-

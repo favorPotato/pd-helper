@@ -1,12 +1,19 @@
 import {FixedOverlay} from '../../shared/ui-overlay'
-import type {CleanedComment} from './types'
+import type {CleanedComment, MediaRouteKind, ReelsPageItem, ReelsPageResult} from './types'
+
+export class InstagramRequestAbortError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'InstagramRequestAbortError'
+    }
+}
 
 export class UiHelper {
     private static overlay: FixedOverlay | null = null
     private static urlCleanup: (() => void) | null = null
     private static lastStatusText = ''
 
-    static async inject(handlers: { onManualAnalyze: () => Promise<void> }): Promise<void> {
+    static async inject(handlers: { onManualAnalyze: () => Promise<void>; onCollectReels: () => Promise<void> }): Promise<void> {
         if (!UiHelper.overlay) {
             UiHelper.overlay = new FixedOverlay()
         }
@@ -21,6 +28,11 @@ export class UiHelper {
         UiHelper.overlay.addButton('手动分析', '#f57c00', async (e) => {
             e.stopPropagation()
             await handlers.onManualAnalyze()
+        }, false)
+
+        UiHelper.overlay.addButton('采集reels', '#8e24aa', async (e) => {
+            e.stopPropagation()
+            await handlers.onCollectReels()
         }, false)
 
         if (UiHelper.urlCleanup) {
@@ -45,6 +57,7 @@ export class UiHelper {
 
         const shortcode = UrlHelper.getShortcode()
         const hasShortcode = !!shortcode
+        const isAccountReelsPage = UrlHelper.isAccountReelsPage()
 
         if (hasShortcode) {
             if (UiHelper.lastStatusText !== 'Instagram (Post)') {
@@ -59,6 +72,7 @@ export class UiHelper {
         }
 
         UiHelper.overlay.setButtonEnabled('手动分析', hasShortcode)
+        UiHelper.overlay.setButtonEnabled('采集reels', isAccountReelsPage)
     }
 }
 
@@ -67,9 +81,85 @@ export class UrlHelper {
         const match = window.location.pathname.match(/\/(p|reels?)\/([A-Za-z0-9_-]+)\//)
         return match ? match[2] : null
     }
+
+    static getMediaRouteKindFromUrl(url: string = window.location.href): MediaRouteKind | null {
+        const pathname = new URL(url, window.location.origin).pathname
+        if (/^\/p\/[A-Za-z0-9_-]+\/$/.test(pathname)) return 'p'
+        if (/^\/(?:reel|reels)\/[A-Za-z0-9_-]+\/$/.test(pathname)) return 'reels'
+        return null
+    }
+
+    static getCurrentMediaRouteKind(): MediaRouteKind {
+        return UrlHelper.getMediaRouteKindFromUrl() || 'p'
+    }
+
+    static isAccountReelsPage(url: string = window.location.href): boolean {
+        const pathname = new URL(url, window.location.origin).pathname
+        return /^\/[A-Za-z0-9._]+\/reels\/$/.test(pathname)
+    }
+
+    static getUsernameFromAccountReelsPage(url: string = window.location.href): string | null {
+        const pathname = new URL(url, window.location.origin).pathname
+        const match = pathname.match(/^\/([A-Za-z0-9._]+)\/reels\/$/)
+        return match ? match[1] : null
+    }
 }
 
 export class RequestHelper {
+    private static async sleep(ms: number): Promise<void> {
+        await new Promise((resolve) => setTimeout(resolve, ms))
+    }
+
+    private static randomBetween(minMs: number, maxMs: number): number {
+        const lower = Math.min(minMs, maxMs)
+        const upper = Math.max(minMs, maxMs)
+        return Math.floor(Math.random() * (upper - lower + 1)) + lower
+    }
+
+    private static ensureResponseAllowed(response: Response, requestLabel: string): void {
+        if (response.status === 301 || response.redirected) {
+            throw new InstagramRequestAbortError(`${requestLabel} 被重定向，终止采集`)
+        }
+    }
+
+    private static async fetchWithRetry(
+        input: RequestInfo | URL,
+        init: RequestInit,
+        requestLabel: string
+    ): Promise<Response> {
+        let attempt = 0
+
+        while (true) {
+            const response = await fetch(input, init)
+            RequestHelper.ensureResponseAllowed(response, requestLabel)
+
+            if (response.status !== 429) {
+                return response
+            }
+
+            attempt += 1
+            if (attempt >= 3) {
+                return response
+            }
+
+            const delay = RequestHelper.randomBetween(30000, 60000)
+            console.warn(`${requestLabel} 命中 429，第 ${attempt} 次重试前等待 ${delay}ms`)
+            await RequestHelper.sleep(delay)
+        }
+    }
+
+    private static extractFromHtml(patterns: RegExp[], html: string): string | null {
+        for (const pattern of patterns) {
+            const match = pattern.exec(html)
+            if (match?.[1]) return match[1]
+        }
+        return null
+    }
+
+    private static getPageHtml(): string {
+        return document.documentElement?.outerHTML || ''
+    }
+
     private static buildCommentsUrl(mediaId: string, minId: string | null): string {
         const params = new URLSearchParams()
         params.set('can_support_threading', 'true')
@@ -120,7 +210,29 @@ export class RequestHelper {
 
         const headerValues = await RequestHelper.getHeaderValues()
         if (headerValues?.claim) headers['x-ig-www-claim'] = headerValues.claim
+        if (headerValues?.ajax) headers['x-instagram-ajax'] = headerValues.ajax
         if (headerValues?.webSid) headers['x-web-session-id'] = headerValues.webSid
+    }
+
+    private static getGraphqlTokens(): {fbDtsg: string; lsd: string; jazoest: string} | null {
+        const html = RequestHelper.getPageHtml()
+        if (!html) return null
+
+        const lsd = RequestHelper.extractFromHtml([
+            /"LSD",\[\],\{"token":"([^"]+)"/,
+            /\["LSD",\[],\{"token":"([^"]+)"/
+        ], html)
+        const fbDtsg = RequestHelper.extractFromHtml([
+            /"DTSGInitialData",\[\],\{"token":"([^"]+)"/,
+            /"DTSGInitData",\[\],\{"token":"([^"]+)"/
+        ], html)
+        const jazoest = RequestHelper.extractFromHtml([
+            /jazoest=([0-9]+)/,
+            /"jazoest":"?([0-9]+)"?/
+        ], html)
+
+        if (!lsd || !fbDtsg || !jazoest) return null
+        return {fbDtsg, lsd, jazoest}
     }
 
     static async fetchCommentsPage(
@@ -139,12 +251,12 @@ export class RequestHelper {
         await RequestHelper.applyAuthHeaders(headers)
 
         try {
-            const response = await fetch(url, {
+            const response = await RequestHelper.fetchWithRetry(url, {
                 method: 'GET',
                 headers,
                 mode: 'cors',
                 credentials: 'include'
-            })
+            }, 'reels 评论请求')
             if (!response.ok) return null
             const data = (await response.json()) as {
                 comments?: Array<{
@@ -184,7 +296,12 @@ export class RequestHelper {
     }
 
     static buildPostUrl(shortcode: string): string {
-        return `https://www.instagram.com/p/${shortcode}/`
+        return RequestHelper.buildMediaUrl(shortcode, 'p')
+    }
+
+    static buildMediaUrl(shortcode: string, routeKind: MediaRouteKind): string {
+        const path = routeKind === 'reels' ? 'reels' : 'p'
+        return `https://www.instagram.com/${path}/${shortcode}/`
     }
 
     static buildProfileV1Url(username: string): string {
@@ -198,8 +315,16 @@ export class RequestHelper {
 
     static async fetchProfileV1(username: string): Promise<{
         id: string | null
-        followersCount: number | null
+        username: string
+        fullName: string | null
         bio: string | null
+        externalUrls: string[]
+        followersCount: number | null
+        followingCount: number | null
+        postCount: number | null
+        isVerified: boolean | null
+        isBusinessAccount: boolean | null
+        profilePicUrl: string | null
     } | null> {
         const url = RequestHelper.buildProfileV1Url(username)
         const headers: Record<string, string> = {
@@ -224,10 +349,27 @@ export class RequestHelper {
             const data = await response.json()
             const user = data?.data?.user
             if (!user) return null
+            const bioLinks = Array.isArray(user?.bio_links) ? user.bio_links : []
+            const externalUrls = Array.from(new Set([
+                ...bioLinks.map((item: any) => (typeof item?.url === 'string' ? item.url : '')).filter(Boolean),
+                typeof user?.external_url === 'string' ? user.external_url : ''
+            ].filter(Boolean)))
             return {
                 id: user?.id ? String(user.id) : null,
+                username: typeof user?.username === 'string' ? user.username : username,
+                fullName: typeof user?.full_name === 'string' ? user.full_name : null,
+                bio: typeof user?.biography === 'string' ? user.biography : null,
+                externalUrls,
                 followersCount: typeof user?.edge_followed_by?.count === 'number' ? user.edge_followed_by.count : null,
-                bio: typeof user?.biography === 'string' ? user.biography : null
+                followingCount: typeof user?.edge_follow?.count === 'number' ? user.edge_follow.count : null,
+                postCount: typeof user?.edge_owner_to_timeline_media?.count === 'number' ? user.edge_owner_to_timeline_media.count : null,
+                isVerified: typeof user?.is_verified === 'boolean' ? user.is_verified : null,
+                isBusinessAccount: typeof user?.is_business_account === 'boolean' ? user.is_business_account : null,
+                profilePicUrl: typeof user?.profile_pic_url_hd === 'string'
+                    ? user.profile_pic_url_hd
+                    : typeof user?.profile_pic_url === 'string'
+                        ? user.profile_pic_url
+                        : null
             }
         } catch (error) {
             console.error('请求失败:', error)
@@ -406,10 +548,95 @@ export class RequestHelper {
         }
     }
 
-    static async fetchPostHtml(shortcode: string): Promise<string | null> {
-        const url = RequestHelper.buildPostUrl(shortcode)
+    private static parseReelsPageResponse(data: any): ReelsPageResult | null {
+        const connection = data?.data?.xdt_api__v1__clips__user__connection_v2
+        if (!connection || !Array.isArray(connection.edges)) return null
+
+        const items: ReelsPageItem[] = connection.edges
+            .map((edge: any) => {
+                const media = edge?.node?.media
+                const id = media?.pk !== undefined && media?.pk !== null ? String(media.pk) : ''
+                const shortcode = typeof media?.code === 'string' ? media.code : ''
+                if (!id || !shortcode) return null
+                return {id, shortcode}
+            })
+            .filter((item: ReelsPageItem | null): item is ReelsPageItem => item !== null)
+
+        return {
+            items,
+            pageInfo: {
+                has_next_page: connection?.page_info?.has_next_page === true,
+                end_cursor: typeof connection?.page_info?.end_cursor === 'string' && connection.page_info.end_cursor
+                    ? connection.page_info.end_cursor
+                    : null
+            }
+        }
+    }
+
+    static async fetchReelsPage(userId: string, after: string | null): Promise<ReelsPageResult | null> {
+        if (!userId) return null
+        const tokens = RequestHelper.getGraphqlTokens()
+        const auth = await RequestHelper.getAuthCookies()
+        if (!tokens || !auth?.ds_user_id) return null
+
+        const variables = after
+            ? {
+                after,
+                before: null,
+                data: {include_feed_video: true, page_size: 12, target_user_id: userId},
+                first: 3,
+                last: null
+            }
+            : {
+                data: {include_feed_video: true, page_size: 12, target_user_id: userId}
+            }
+
+        const form = new URLSearchParams()
+        form.set('fb_api_caller_class', 'RelayModern')
+        form.set('fb_api_req_friendly_name', after ? 'PolarisProfileReelsTabContentQuery_connection' : 'PolarisProfileReelsTabContentQuery')
+        form.set('variables', JSON.stringify(variables))
+        form.set('server_timestamps', 'true')
+        form.set('doc_id', after ? '26450124097916368' : '26384222851217435')
+        form.set('av', auth.ds_user_id)
+        form.set('__user', auth.ds_user_id)
+        form.set('fb_dtsg', tokens.fbDtsg)
+        form.set('jazoest', tokens.jazoest)
+        form.set('lsd', tokens.lsd)
+
+        const headers: Record<string, string> = {
+            accept: '*/*',
+            'content-type': 'application/x-www-form-urlencoded',
+            origin: 'https://www.instagram.com',
+            referer: window.location.href,
+            'x-ig-app-id': '936619743392459',
+            'x-asbd-id': '359341',
+            'x-fb-lsd': tokens.lsd,
+            'x-fb-friendly-name': after ? 'PolarisProfileReelsTabContentQuery_connection' : 'PolarisProfileReelsTabContentQuery',
+            'x-root-field-name': 'xdt_api__v1__clips__user__connection_v2'
+        }
+        await RequestHelper.applyAuthHeaders(headers)
+
         try {
-            const response = await fetch(url, {
+            const response = await RequestHelper.fetchWithRetry('https://www.instagram.com/graphql/query', {
+                method: 'POST',
+                headers,
+                body: form.toString(),
+                credentials: 'include'
+            }, 'reels 列表请求')
+            if (!response.ok) return null
+            const data = await response.json()
+            return RequestHelper.parseReelsPageResponse(data)
+        } catch (error) {
+            console.error('请求失败:', error)
+            return null
+        }
+    }
+
+    static async fetchPostHtml(shortcode: string, routeKind: MediaRouteKind = 'p'): Promise<string | null> {
+        const url = RequestHelper.buildMediaUrl(shortcode, routeKind)
+        const requestLabel = routeKind === 'reels' ? 'reels 详情请求' : '帖子详情请求'
+        try {
+            const response = await RequestHelper.fetchWithRetry(url, {
                 headers: {
                     accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
                 },
@@ -417,7 +644,7 @@ export class RequestHelper {
                 method: 'GET',
                 mode: 'cors',
                 credentials: 'include'
-            })
+            }, requestLabel)
 
             if (!response.ok) {
                 console.error('请求失败:', response.status)
