@@ -1,6 +1,5 @@
-import {analyzeMedia} from '../../shared/api'
 import {MEDIA_PROMPT} from '../../shared/env'
-import type {ExtractResult, MediaAnalysis} from '../../types'
+import type {ExtractResult} from '../../types'
 import type {CleanedMedia, CommentsResult} from './types'
 import {RequestHelper} from './helpers'
 
@@ -393,52 +392,6 @@ export class Extractor {
 }
 
 export class Analyzer {
-    static async callAIAnalysis(mediaUrl: string | string[]): Promise<MediaAnalysis | null> {
-        const result = await analyzeMedia(mediaUrl)
-        if (!result) return null
-        return Analyzer.parseMediaAnalysis(result)
-    }
-
-    private static parseMediaAnalysis(raw: string): MediaAnalysis | null {
-        try {
-            const parsed = JSON.parse(raw) as unknown
-            if (typeof parsed === 'object' && parsed !== null && 'media_analysis' in parsed) {
-                const container = parsed as {media_analysis?: unknown}
-                const nested = Analyzer.normalizeMediaAnalysis(container.media_analysis)
-                if (nested) return nested
-            }
-            return Analyzer.normalizeMediaAnalysis(parsed)
-        } catch (error) {
-            console.error('AI分析结果解析失败:', error)
-            return null
-        }
-    }
-
-    private static normalizeMediaAnalysis(raw: unknown): MediaAnalysis | null {
-        if (typeof raw !== 'object' || raw === null) return null
-        const data = raw as Record<string, unknown>
-        const perImageNotes = Array.isArray(data.per_image_notes)
-            ? data.per_image_notes.filter((item) => typeof item === 'string')
-            : data.per_image_notes === null
-                ? null
-                : null
-        return {
-            description: typeof data.description === 'string' ? data.description : '',
-            per_image_notes: perImageNotes,
-            visual_tags: Array.isArray(data.visual_tags)
-                ? data.visual_tags.filter((item) => typeof item === 'string')
-                : [],
-            tone: typeof data.tone === 'string' ? data.tone : '',
-            hook_points: Array.isArray(data.hook_points)
-                ? data.hook_points.filter((item) => typeof item === 'string')
-                : [],
-            text_in_image: typeof data.text_in_image === 'string' ? data.text_in_image : null,
-            opening_hook: typeof data.opening_hook === 'string' ? data.opening_hook : null,
-            turning_point: typeof data.turning_point === 'string' ? data.turning_point : null,
-            highlight_moment: typeof data.highlight_moment === 'string' ? data.highlight_moment : null
-        }
-    }
-
     private static buildOutputResult(result: ExtractResult): ExtractResult {
         const media = result.media ? {...result.media} : null
         if (media) {
@@ -447,12 +400,6 @@ export class Analyzer {
         }
         const comments = result.comments.map((comment) => ({...comment}))
         return {...result, media, comments}
-    }
-
-    static async downloadSuccessResult(result: ExtractResult, shortcode: string): Promise<void> {
-        const jsonOutput = JSON.stringify(Analyzer.buildOutputResult(result), null, 2)
-        console.log('=== AI分析结果 ===\n', jsonOutput)
-        await Analyzer.downloadText(`${shortcode}.txt`, jsonOutput)
     }
 
     static async downloadFallbackResult(result: ExtractResult, shortcode: string, filename: string): Promise<void> {
@@ -499,5 +446,4 @@ export class Analyzer {
         await chrome.runtime.sendMessage({action: 'download', url: mediaUrl, filename})
     }
 }
-
 

@@ -43,42 +43,6 @@ async function preparePostData(): Promise<{
     return {shortcode, postData: preparedPostData}
 }
 
-async function runAutoAnalysisWorkflow() {
-    if (analysisInProgress) return
-
-    try {
-        UiHelper.log('开始自动分析...')
-        analysisInProgress = true
-
-        const prepared = await preparePostData()
-        if (!prepared) return
-        const {shortcode, postData} = prepared
-
-        const mediaUrls =
-            postData.media?.media_type === 'carousel' && Array.isArray(postData.media.media_urls)
-                ? postData.media.media_urls
-                : postData.media?.media_url
-        const analysis = mediaUrls ? await Analyzer.callAIAnalysis(mediaUrls) : null
-
-        if (analysis) {
-            postData.media_analysis = analysis
-            await Analyzer.downloadSuccessResult(postData, shortcode)
-            alert(`AI分析成功，请查看 ${shortcode}.txt`)
-            UiHelper.log('AI分析成功')
-        } else {
-            UiHelper.setButtonEnabled('自动分析', false)
-            alert('自动分析失败，请点击“手动分析”生成相关文件')
-            UiHelper.log('自动分析失败')
-        }
-    } catch (error) {
-        const msg = truncateError(error instanceof Error ? error.message : String(error), 500)
-        alert(`分析失败: ${msg}`)
-        UiHelper.log(`分析失败: ${msg}`)
-    } finally {
-        analysisInProgress = false
-    }
-}
-
 async function runManualAnalysisWorkflow() {
     if (analysisInProgress) return
 
@@ -107,7 +71,6 @@ async function runManualAnalysisWorkflow() {
 export function setup() {
     // 初始化UI
     void UiHelper.inject({
-        onAutoAnalyze: runAutoAnalysisWorkflow,
         onManualAnalyze: runManualAnalysisWorkflow
     })
 }
