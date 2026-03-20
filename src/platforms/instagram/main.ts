@@ -1,11 +1,35 @@
 import {Analyzer, Extractor} from './analyzer'
 import {InstagramRequestAbortError, UiHelper, UrlHelper} from './helpers'
 import {truncateError} from '../../shared/errors'
+import type {ReelsCollectRange} from './types'
 
 let analysisInProgress = false
 let reelsCollectionInProgress = false
 
 type ExtractedPostData = NonNullable<Awaited<ReturnType<typeof Extractor.extractPostData>>>
+
+function parseReelsCollectRange(input: string): ReelsCollectRange | null {
+    const normalized = input.trim()
+    if (!normalized) return null
+
+    const match = normalized.match(/^(\d+)(?:\s*-\s*(\d+))?$/)
+    if (!match) {
+        throw new Error('区间格式无效，请输入如 1-10 或 5')
+    }
+
+    const start = Number.parseInt(match[1], 10)
+    const end = Number.parseInt(match[2] || match[1], 10)
+
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < 1) {
+        throw new Error('区间必须是大于等于 1 的整数')
+    }
+
+    if (start > end) {
+        throw new Error('区间起始值不能大于结束值')
+    }
+
+    return {start, end}
+}
 
 async function preparePostData(): Promise<{
     shortcode: string
@@ -83,13 +107,26 @@ async function runCollectReelsWorkflow() {
 
     reelsCollectionInProgress = true
     try {
+        const rangeInput = window.prompt('1-10 = 按时间线取第 1 到第 10 个视频\n5 = 只取第 5 个\n留空 = 全部\n输入采集区间值：', '')
+        if (rangeInput === null) {
+            UiHelper.log('已取消 reels 采集')
+            return
+        }
+
+        const range = parseReelsCollectRange(rangeInput)
         const log = (message: string) => {
             console.log(`[采集reels] ${message}`)
             UiHelper.log(message)
         }
 
         log(`开始采集 @${username} 的 reels...`)
-        const collected = await Analyzer.collectReelsForUsername(username, log)
+        if (range) {
+            log(`按时间线区间采集：${range.start}-${range.end}`)
+        } else {
+            log('按时间线采集全部 reels')
+        }
+
+        const collected = await Analyzer.collectReelsForUsername(username, log, range)
         if (!collected) {
             alert('采集失败：无法读取账号或分页数据')
             log('采集失败：无法读取账号或分页数据')

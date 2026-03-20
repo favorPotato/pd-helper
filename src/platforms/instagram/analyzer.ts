@@ -7,7 +7,8 @@ import type {
     CommentOutput,
     CommentsResult,
     MediaRouteKind,
-    PostOutput
+    PostOutput,
+    ReelsCollectRange
 } from './types'
 import {RequestHelper} from './helpers'
 
@@ -600,7 +601,8 @@ export class Analyzer {
 
     static async collectReelsForUsername(
         username: string,
-        log: (message: string) => void
+        log: (message: string) => void,
+        range?: ReelsCollectRange | null
     ): Promise<{filename: string; output: CollectorOutput} | null> {
         const profile = await RequestHelper.fetchProfileV1(username)
         if (!profile) return null
@@ -650,12 +652,24 @@ export class Analyzer {
             await Analyzer.sleepRandom(1200, 2000)
         }
 
+        allItems.reverse()
+
+        const selectedItems = range
+            ? allItems.slice(Math.max(0, range.start - 1), Math.min(allItems.length, range.end))
+            : allItems
+
+        if (range) {
+            log(`时间线范围 ${range.start}-${range.end}，命中 ${selectedItems.length}/${allItems.length} 条`)
+        } else {
+            log(`按时间线顺序处理全部 ${selectedItems.length} 条 reels`)
+        }
+
         const posts: PostOutput[] = []
         let hasIncomplete = false
 
-        for (let index = 0; index < allItems.length; index += 1) {
-            const item = allItems[index]
-            log(`抓取详情 ${index + 1}/${allItems.length}: ${item.shortcode}`)
+        for (let index = 0; index < selectedItems.length; index += 1) {
+            const item = selectedItems[index]
+            log(`抓取详情 ${index + 1}/${selectedItems.length}: ${item.shortcode}`)
             const result = await Extractor.extractPostData(item.shortcode, {
                 routeKind: 'reels',
                 commentsMode: 'first_page_only',
@@ -673,12 +687,10 @@ export class Analyzer {
                 comments: result.comments.map((comment) => Analyzer.mapCommentOutput(comment))
             })
 
-            if (index < allItems.length - 1) {
+            if (index < selectedItems.length - 1) {
                 await Analyzer.sleepRandom(800, 1500)
             }
         }
-
-        posts.sort((a, b) => (a.taken_at || 0) - (b.taken_at || 0))
 
         const crawledAt = new Date()
         const output: CollectorOutput = {

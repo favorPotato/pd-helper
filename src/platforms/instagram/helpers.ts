@@ -260,6 +260,8 @@ export class RequestHelper {
             if (!response.ok) return null
             const data = (await response.json()) as {
                 comments?: Array<{
+                    pk?: unknown
+                    id?: unknown
                     text?: unknown
                     created_at?: unknown
                     comment_like_count?: unknown
@@ -272,6 +274,11 @@ export class RequestHelper {
 
             const rawComments = Array.isArray(data.comments) ? data.comments : []
             const comments = rawComments.map((comment) => ({
+                comment_id: comment?.pk !== undefined && comment?.pk !== null
+                    ? String(comment.pk)
+                    : comment?.id !== undefined && comment?.id !== null
+                        ? String(comment.id)
+                        : null,
                 text: typeof comment.text === 'string' ? comment.text : '',
                 created_at: typeof comment.created_at === 'number' ? comment.created_at : 0,
                 like_count: typeof comment.comment_like_count === 'number' ? comment.comment_like_count : 0,

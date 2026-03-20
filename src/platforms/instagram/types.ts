@@ -70,6 +70,11 @@ export interface ReelsPageItem {
     shortcode: string
 }
 
+export interface ReelsCollectRange {
+    start: number
+    end: number
+}
+
 export interface ReelsPageResult {
     items: ReelsPageItem[]
     pageInfo: {
