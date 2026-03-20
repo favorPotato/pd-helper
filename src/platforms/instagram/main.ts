@@ -95,7 +95,7 @@ async function runManualAnalysisWorkflow() {
     }
 }
 
-async function runCollectReelsWorkflow() {
+async function runCollectReelsWorkflow(order: 'asc' | 'desc' = 'asc') {
     if (reelsCollectionInProgress) return
 
     const username = UrlHelper.getUsernameFromAccountReelsPage()
@@ -119,14 +119,14 @@ async function runCollectReelsWorkflow() {
             UiHelper.log(message)
         }
 
-        log(`开始采集 @${username} 的 reels...`)
+        log(`开始采集 @${username} 的 reels（${order === 'asc' ? '正序' : '倒序'}）...`)
         if (range) {
-            log(`按时间线区间采集：${range.start}-${range.end}`)
+            log(`按${order === 'asc' ? '正序' : '倒序'}区间采集：${range.start}-${range.end}`)
         } else {
-            log('按时间线采集全部 reels')
+            log(`按${order === 'asc' ? '正序' : '倒序'}采集全部 reels`)
         }
 
-        const collected = await Analyzer.collectReelsForUsername(username, log, range)
+        const collected = await Analyzer.collectReelsForUsername(username, log, range, order)
         if (!collected) {
             alert('采集失败：无法读取账号或分页数据')
             log('采集失败：无法读取账号或分页数据')
@@ -153,6 +153,7 @@ export function setup() {
     // 初始化UI
     void UiHelper.inject({
         onManualAnalyze: runManualAnalysisWorkflow,
-        onCollectReels: runCollectReelsWorkflow
+        onCollectReels: () => runCollectReelsWorkflow('asc'),
+        onCollectReelsDesc: () => runCollectReelsWorkflow('desc')
     })
 }

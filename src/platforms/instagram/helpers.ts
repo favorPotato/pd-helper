@@ -13,7 +13,11 @@ export class UiHelper {
     private static urlCleanup: (() => void) | null = null
     private static lastStatusText = ''
 
-    static async inject(handlers: { onManualAnalyze: () => Promise<void>; onCollectReels: () => Promise<void> }): Promise<void> {
+    static async inject(handlers: {
+        onManualAnalyze: () => Promise<void>
+        onCollectReels: () => Promise<void>
+        onCollectReelsDesc: () => Promise<void>
+    }): Promise<void> {
         if (!UiHelper.overlay) {
             UiHelper.overlay = new FixedOverlay()
         }
@@ -30,9 +34,14 @@ export class UiHelper {
             await handlers.onManualAnalyze()
         }, false)
 
-        UiHelper.overlay.addButton('采集reels', '#8e24aa', async (e) => {
+        UiHelper.overlay.addButton('采集reels(正序)', '#8e24aa', async (e) => {
             e.stopPropagation()
             await handlers.onCollectReels()
+        }, false)
+
+        UiHelper.overlay.addButton('采集reels(倒序)', '#6a1b9a', async (e) => {
+            e.stopPropagation()
+            await handlers.onCollectReelsDesc()
         }, false)
 
         if (UiHelper.urlCleanup) {
@@ -72,7 +81,8 @@ export class UiHelper {
         }
 
         UiHelper.overlay.setButtonEnabled('手动分析', hasShortcode)
-        UiHelper.overlay.setButtonEnabled('采集reels', isAccountReelsPage)
+        UiHelper.overlay.setButtonEnabled('采集reels(正序)', isAccountReelsPage)
+        UiHelper.overlay.setButtonEnabled('采集reels(倒序)', isAccountReelsPage)
     }
 }
 

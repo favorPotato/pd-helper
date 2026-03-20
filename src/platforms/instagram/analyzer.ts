@@ -602,7 +602,8 @@ export class Analyzer {
     static async collectReelsForUsername(
         username: string,
         log: (message: string) => void,
-        range?: ReelsCollectRange | null
+        range?: ReelsCollectRange | null,
+        order: 'asc' | 'desc' = 'asc'
     ): Promise<{filename: string; output: CollectorOutput} | null> {
         const profile = await RequestHelper.fetchProfileV1(username)
         if (!profile) return null
@@ -652,7 +653,9 @@ export class Analyzer {
             await Analyzer.sleepRandom(1200, 2000)
         }
 
-        allItems.reverse()
+        if (order === 'asc') {
+            allItems.reverse()
+        }
 
         const selectedItems = range
             ? allItems.slice(Math.max(0, range.start - 1), Math.min(allItems.length, range.end))
@@ -661,7 +664,7 @@ export class Analyzer {
         if (range) {
             log(`时间线范围 ${range.start}-${range.end}，命中 ${selectedItems.length}/${allItems.length} 条`)
         } else {
-            log(`按时间线顺序处理全部 ${selectedItems.length} 条 reels`)
+            log(`按${order === 'asc' ? '正序' : '倒序'}处理全部 ${selectedItems.length} 条 reels`)
         }
 
         const posts: PostOutput[] = []
