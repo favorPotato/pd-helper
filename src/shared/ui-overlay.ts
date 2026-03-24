@@ -5,6 +5,7 @@ export interface OverlayButton {
     color: string;
     onClick: (e: MouseEvent) => void;
     enabled?: boolean;
+    visible?: boolean;
 }
 
 export class FixedOverlay {
@@ -69,7 +70,7 @@ export class FixedOverlay {
         if (!host || !this.buttons) return;
 
         // Determine enabled state: enabled if at least one button is enabled
-        const enabled = this.buttons.some(button => button.config.enabled !== false);
+        const enabled = this.buttons.some(button => button.config.visible !== false && button.config.enabled !== false);
         host.setAttribute('data-ig-helper-enabled', enabled.toString());
     }
 
@@ -295,10 +296,12 @@ export class FixedOverlay {
         const existingIndex = this.buttons.findIndex(b => b.config.text === text);
         if (existingIndex >= 0) {
             const {element} = this.buttons[existingIndex];
+            const visible = this.buttons[existingIndex].config.visible !== false;
             element.onclick = onClick;
             element.style.background = color;
+            element.style.display = visible ? 'flex' : 'none';
             element.disabled = !enabled;
-            this.buttons[existingIndex].config = {text, color, onClick, enabled};
+            this.buttons[existingIndex].config = {text, color, onClick, enabled, visible};
             // Sync enabled state when button is updated
             this.syncEnabledAttribute();
             return;
@@ -307,12 +310,30 @@ export class FixedOverlay {
         const btn = document.createElement('button');
         btn.textContent = text;
         btn.style.background = color;
+        btn.style.display = 'flex';
         btn.onclick = onClick;
         btn.disabled = !enabled;
 
         this.buttonContainer.appendChild(btn);
-        this.buttons.push({element: btn, config: {text, color, onClick, enabled}});
+        this.buttons.push({element: btn, config: {text, color, onClick, enabled, visible: true}});
         // Sync enabled state when button is added
+        this.syncEnabledAttribute();
+    }
+
+    public setButtonVisible(indexOrText: number | string, visible: boolean) {
+        let target: { element: HTMLButtonElement; config: OverlayButton } | undefined;
+
+        if (typeof indexOrText === 'number') {
+            target = this.buttons[indexOrText];
+        } else {
+            target = this.buttons.find(b => b.config.text === indexOrText);
+        }
+
+        if (target) {
+            target.element.style.display = visible ? 'flex' : 'none';
+            target.config.visible = visible;
+        }
+
         this.syncEnabledAttribute();
     }
 

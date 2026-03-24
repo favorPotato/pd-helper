@@ -541,6 +541,42 @@ export class Extractor {
 }
 
 export class Analyzer {
+    static buildScriptApiPostData(result: ExtractResult): {
+        post_id: string
+        shortcode: string | null
+        caption: string | null
+        accessibility_caption: string | null
+        location: {name: string; lat: number | null; lng: number | null} | null
+        hashtags: string[]
+        mentions: string[]
+        taken_at: number | null
+        media_type: string | null
+        type: string | null
+        is_carousel: boolean
+        carousel_count: number | null
+        comments_disabled: boolean
+        author: {username: string | null} | null
+    } {
+        const media = result.media
+
+        return {
+            post_id: media?.id || '',
+            shortcode: media?.shortcode || null,
+            caption: media?.caption || null,
+            accessibility_caption: media?.accessibility_caption || null,
+            location: media?.location || null,
+            hashtags: Array.isArray(media?.hashtags) ? [...media.hashtags] : [],
+            mentions: Array.isArray(media?.mentions) ? [...media.mentions] : [],
+            taken_at: media?.taken_at ?? null,
+            media_type: media?.media_type || null,
+            type: media?.type || null,
+            is_carousel: media?.is_carousel === true,
+            carousel_count: media?.carousel_count ?? null,
+            comments_disabled: media?.comments_disabled === true,
+            author: media?.author ? {username: media.author.username ?? null} : null
+        }
+    }
+
     private static async sleepRandom(minMs: number, maxMs: number): Promise<void> {
         const lower = Math.max(0, Math.min(minMs, maxMs))
         const upper = Math.max(lower, Math.max(minMs, maxMs))
@@ -710,7 +746,7 @@ export class Analyzer {
         return {filename, output}
     }
 
-    private static buildOutputResult(result: ExtractResult): ExtractResult {
+    static buildScriptPayload(result: ExtractResult): ExtractResult {
         const media = result.media ? {...result.media} : null
         if (media) {
             delete (media as {media_url?: string | null}).media_url
@@ -742,7 +778,7 @@ export class Analyzer {
     private static async buildFallbackOutput(result: ExtractResult): Promise<string> {
         const instruction = '根据规则分析图片，将结果填入到 media_analysis[object]，只允许修改 media_analysis 内部字段，最终只输出填充好 media_analysis 字段后的完整 json。'
 
-        const payload = JSON.stringify(Analyzer.buildOutputResult(result), null, 2)
+        const payload = JSON.stringify(Analyzer.buildScriptPayload(result), null, 2)
         return `${instruction}\n\n${MEDIA_PROMPT}\n\n${payload}`
     }
 

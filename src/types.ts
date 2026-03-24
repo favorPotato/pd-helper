@@ -1,10 +1,27 @@
 import type {CleanedComment, CleanedMedia} from './platforms/instagram/types'
 
-export interface ApiConfig {
-    url: string
-    key: string
-    model: string
-    timeout: number
+export type ScriptApiEndpoint = '/health' | '/precheck' | '/generate-script'
+
+export interface ScriptApiUploadFile {
+    filename: string
+    mimeType: string
+    bytes: number[]
+}
+
+export interface ScriptApiRequestMessage {
+    type: 'script_api_request'
+    endpoint: ScriptApiEndpoint
+    method?: 'GET' | 'POST'
+    body?: unknown
+    bodyType?: 'json' | 'multipart'
+    files?: ScriptApiUploadFile[]
+}
+
+export interface ScriptApiResponse {
+    ok: boolean
+    status: number
+    data: unknown
+    error?: string
 }
 
 export interface DownloadMessage {

@@ -15,6 +15,7 @@ export class UiHelper {
 
     static async inject(handlers: {
         onManualAnalyze: () => Promise<void>
+        onGenerateScript: () => Promise<void>
         onCollectReels: () => Promise<void>
         onCollectReelsDesc: () => Promise<void>
     }): Promise<void> {
@@ -32,6 +33,11 @@ export class UiHelper {
         UiHelper.overlay.addButton('手动分析', '#f57c00', async (e) => {
             e.stopPropagation()
             await handlers.onManualAnalyze()
+        }, false)
+
+        UiHelper.overlay.addButton('生成剧本', '#00897b', async (e) => {
+            e.stopPropagation()
+            await handlers.onGenerateScript()
         }, false)
 
         UiHelper.overlay.addButton('采集reels(正序)', '#8e24aa', async (e) => {
@@ -80,8 +86,13 @@ export class UiHelper {
             }
         }
 
+        UiHelper.overlay.setButtonVisible('手动分析', hasShortcode)
         UiHelper.overlay.setButtonEnabled('手动分析', hasShortcode)
+        UiHelper.overlay.setButtonVisible('生成剧本', hasShortcode)
+        UiHelper.overlay.setButtonEnabled('生成剧本', hasShortcode)
+        UiHelper.overlay.setButtonVisible('采集reels(正序)', isAccountReelsPage)
         UiHelper.overlay.setButtonEnabled('采集reels(正序)', isAccountReelsPage)
+        UiHelper.overlay.setButtonVisible('采集reels(倒序)', isAccountReelsPage)
         UiHelper.overlay.setButtonEnabled('采集reels(倒序)', isAccountReelsPage)
     }
 }

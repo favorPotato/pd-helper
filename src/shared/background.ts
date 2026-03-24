@@ -1,7 +1,8 @@
-import type {DownloadMessage} from '../types'
+import type {DownloadMessage, ScriptApiRequestMessage, ScriptApiResponse, ScriptApiUploadFile} from '../types'
 import {idbGet, idbPut, idbDelete, IDB_KEY, clearStaleCache, parseVideoMeta, type CachedVideo} from './idb'
 import {truncateError} from './errors'
 import {loadHeaderCache, getHeaderValues, getHeaderStatus, setupHeaderListener} from './header-cache'
+import {SCRIPT_API_BASE, SCRIPT_API_KEY} from './env'
 
 // Bridge lock to prevent multi-tab race conditions
 let bridgeLock = {held: false, since: 0}
@@ -21,6 +22,99 @@ function releaseLock(): void {
 }
 
 const IG_MATCH_RE = /^https:\/\/www\.instagram\.com\//
+
+function parseJsonIfPossible(text: string): unknown {
+    if (!text) return null
+    try {
+        return JSON.parse(text)
+    } catch {
+        return text
+    }
+}
+
+function extractScriptApiError(data: unknown, fallback: string): string {
+    if (typeof data === 'string' && data.trim()) {
+        return truncateError(data, 500)
+    }
+
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+        const record = data as Record<string, unknown>
+        const candidates = [record.error, record.message, record.detail, record.msg]
+        for (const candidate of candidates) {
+            if (typeof candidate === 'string' && candidate.trim()) {
+                return truncateError(candidate, 500)
+            }
+        }
+        try {
+            return truncateError(JSON.stringify(record), 500)
+        } catch {
+        }
+    }
+
+    return fallback
+}
+
+async function requestScriptApi(request: ScriptApiRequestMessage): Promise<ScriptApiResponse> {
+    if (!SCRIPT_API_BASE) {
+        return {ok: false, status: 0, data: null, error: 'SCRIPT_API_BASE 未配置'}
+    }
+
+    if (!SCRIPT_API_KEY) {
+        return {ok: false, status: 0, data: null, error: 'SCRIPT_API_KEY 未配置'}
+    }
+
+    try {
+        const url = `${SCRIPT_API_BASE}${request.endpoint}`
+        const method = request.method || (request.body === undefined ? 'GET' : 'POST')
+        const headers: Record<string, string> = {
+            accept: 'application/json, text/plain, */*',
+            'x-api-key': SCRIPT_API_KEY
+        }
+
+        let body: BodyInit | undefined
+        if (request.bodyType === 'multipart') {
+            const formData = new FormData()
+            formData.set('media', typeof request.body === 'string' ? request.body : JSON.stringify(request.body ?? {}))
+
+            for (const file of Array.isArray(request.files) ? request.files : []) {
+                const bytes = new Uint8Array(Array.isArray(file.bytes) ? file.bytes : [])
+                const blob = new Blob([bytes], {type: file.mimeType || 'application/octet-stream'})
+                formData.append('media_files', blob, file.filename || 'media.bin')
+            }
+
+            body = formData
+        } else if (request.body !== undefined) {
+            headers['content-type'] = 'application/json'
+            body = JSON.stringify(request.body)
+        }
+
+        const response = await fetch(url, {
+            method,
+            headers,
+            body
+        })
+        const text = await response.text()
+        const data = parseJsonIfPossible(text)
+
+        if (response.ok) {
+            return {ok: true, status: response.status, data}
+        }
+
+        return {
+            ok: false,
+            status: response.status,
+            data,
+            error: extractScriptApiError(data, `请求失败 (${response.status})`)
+        }
+    } catch (error) {
+        return {
+            ok: false,
+            status: 0,
+            data: null,
+            error: truncateError(error instanceof Error ? error.message : String(error), 500)
+        }
+    }
+}
 
 function classifyIgTabError(e: unknown): {reason: string; error: string} {
     const raw = e instanceof Error ? e.message : String(e)
@@ -145,6 +239,13 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
             } catch (e) {
                 sendResponse({ok: false, error: String(e)})
             }
+        })()
+        return true
+    }
+
+    if (request.type === 'script_api_request') {
+        ;(async () => {
+            sendResponse(await requestScriptApi(request as ScriptApiRequestMessage))
         })()
         return true
     }

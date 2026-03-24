@@ -14,6 +14,9 @@ export default {
     ],
     host_permissions: [
         '*://*.instagram.com/*',
+        '*://*.cdninstagram.com/*',
+        '*://*.fbcdn.net/*',
+        '*://lookaside.fbsbx.com/*',
         '*://*.tiktok.com/*',
         '*://*.tiktokcdn.com/*',
         '*://*.tiktokcdn-us.com/*',
