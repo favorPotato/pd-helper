@@ -4,7 +4,11 @@ export class UiHelper {
     private static overlay: FixedOverlay | null = null;
     private static urlCleanup: (() => void) | null = null;
 
-    public static async inject(handlers: { onBridge: () => Promise<void>; onDownload: () => Promise<void> }) {
+    public static async inject(handlers: {
+        onBridge: () => Promise<void>
+        onDownload: () => Promise<void>
+        onCollect: () => Promise<void>
+    }) {
         // Ensure we have a single overlay instance
         if (!UiHelper.overlay) {
             UiHelper.overlay = new FixedOverlay();
@@ -27,6 +31,11 @@ export class UiHelper {
             await handlers.onDownload();
         }, false);
 
+        UiHelper.overlay.addButton('采集', '#0ea5e9', async (e) => {
+            e.stopPropagation();
+            await handlers.onCollect();
+        }, false);
+
         // Register URL monitoring
         if (UiHelper.urlCleanup) {
             UiHelper.urlCleanup();
@@ -44,17 +53,24 @@ export class UiHelper {
         if (!UiHelper.overlay) return;
 
         const isVideo = VideoHelper.isVideoPage();
+        const isProfile = UrlHelper.isProfilePage();
 
         // Set status text based on page type
         if (isVideo) {
             UiHelper.overlay.setStatus('tiktok', 'TikTok (Video)');
+        } else if (isProfile) {
+            UiHelper.overlay.setStatus('tiktok', 'TikTok (Profile)');
         } else {
             UiHelper.overlay.setStatus('tiktok', 'TikTok (Non-Video)');
         }
 
         // Enable/disable buttons based on page type
+        UiHelper.overlay.setButtonVisible('转发', isVideo);
         UiHelper.overlay.setButtonEnabled('转发', isVideo);
+        UiHelper.overlay.setButtonVisible('下载', isVideo);
         UiHelper.overlay.setButtonEnabled('下载', isVideo);
+        UiHelper.overlay.setButtonVisible('采集', isProfile);
+        UiHelper.overlay.setButtonEnabled('采集', isProfile);
     }
 
     public static log(message: unknown) {
@@ -170,5 +186,18 @@ export class VideoHelper {
         } catch {
             return {width: 0, height: 0, durationSec: 0};
         }
+    }
+}
+
+export class UrlHelper {
+    static isProfilePage(url: string = window.location.href): boolean {
+        const pathname = new URL(url, window.location.origin).pathname
+        return /^\/@[^/]+\/?$/.test(pathname)
+    }
+
+    static getUsernameFromProfilePage(url: string = window.location.href): string | null {
+        const pathname = new URL(url, window.location.origin).pathname
+        const match = pathname.match(/^\/@([^/]+)\/?$/)
+        return match ? match[1] : null
     }
 }

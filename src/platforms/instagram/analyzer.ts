@@ -1,4 +1,5 @@
 import {MEDIA_PROMPT} from '../../shared/env'
+import {sleepRandom} from '../../shared/timing'
 import type {ExtractResult} from '../../types'
 import type {
     AccountOutput,
@@ -577,13 +578,6 @@ export class Analyzer {
         }
     }
 
-    private static async sleepRandom(minMs: number, maxMs: number): Promise<void> {
-        const lower = Math.max(0, Math.min(minMs, maxMs))
-        const upper = Math.max(lower, Math.max(minMs, maxMs))
-        const delay = Math.floor(Math.random() * (upper - lower + 1)) + lower
-        await new Promise((resolve) => setTimeout(resolve, delay))
-    }
-
     private static mapMediaType(media: CleanedMedia): 'reels' | 'image' | 'carousel' {
         if (media.media_type === 'reels') return 'reels'
         if (media.media_type === 'carousel') return 'carousel'
@@ -686,7 +680,7 @@ export class Analyzer {
             if (!pageResult.pageInfo.has_next_page || !pageResult.pageInfo.end_cursor) break
             after = pageResult.pageInfo.end_cursor
             page += 1
-            await Analyzer.sleepRandom(1200, 2000)
+            await sleepRandom(1200, 2000)
         }
 
         if (order === 'asc') {
@@ -727,7 +721,7 @@ export class Analyzer {
             })
 
             if (index < selectedItems.length - 1) {
-                await Analyzer.sleepRandom(800, 1500)
+                await sleepRandom(800, 1500)
             }
         }
 

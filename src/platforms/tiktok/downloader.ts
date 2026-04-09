@@ -1,4 +1,5 @@
 import {VideoHelper} from './helpers'
+import {fetchBinary, fetchHead, fetchHtml} from './client'
 import type {DownloadedVideo} from './types'
 
 const QUALITY_SCORE: Record<string, number> = {'1080p': 4, '720p': 3, '540p': 2, '360p': 1}
@@ -8,15 +9,6 @@ const MAX_SCAN_NODES = 50_000
 const MAX_SCAN_DEPTH = 60
 
 type AnyObject = Record<string, unknown>
-
-function decodeHtmlEntities(text: string): string {
-    return String(text || '')
-        .replace(/&quot;/g, '"')
-        .replace(/&amp;/g, '&')
-        .replace(/&#39;/g, "'")
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-}
 
 function formatTopKeys(obj: unknown): string {
     const keys = obj && typeof obj === 'object' && !Array.isArray(obj) ? Object.keys(obj as AnyObject) : []
@@ -123,8 +115,9 @@ function asObject(v: unknown): AnyObject | null {
     return v as AnyObject
 }
 
-function getVideoIdFromUrl(): string {
-    const m = window.location.pathname.match(/\/video\/(\d+)/)
+function getVideoIdFromPageUrl(pageUrl: string): string {
+    const pathname = new URL(pageUrl, window.location.origin).pathname
+    const m = pathname.match(/\/video\/(\d+)/)
     if (!m) throw new Error('parse_error:missing_video_detail')
     return m[1]
 }
@@ -247,8 +240,7 @@ function parseContainerJson(container: string, jsonText: string, videoId: string
     candidates: { resolution: string; score: number; bitrate: number; url: string }[];
     topKeys: string
 } {
-    const decoded = decodeHtmlEntities(jsonText)
-    const root = JSON.parse(decoded)
+    const root = JSON.parse(jsonText)
     const topKeysObj =
         container === 'DEFAULT_SCOPE' ? (root as any)?.['__DEFAULT_SCOPE__'] : root
     const topKeys = formatTopKeys(topKeysObj)
@@ -270,20 +262,19 @@ function parseContainerJson(container: string, jsonText: string, videoId: string
 }
 
 export class Downloader {
-    public static async downloadTikTokVideo(): Promise<DownloadedVideo> {
-        const pageUrl = window.location.href
-        const videoId = getVideoIdFromUrl()
+    private static async downloadFromPage(pageUrl: string, videoId: string, filename: string): Promise<DownloadedVideo> {
 
-        const response = await fetch(pageUrl, {
-            headers: {accept: 'text/html'},
-            credentials: 'include'
-        })
-
-        if (!response.ok) {
-            throw new Error(`parse_error:http_status status=${response.status}`)
+        let html = ''
+        try {
+            html = await fetchHtml(pageUrl)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            const statusMatch = message.match(/请求失败: (\d+)/)
+            if (statusMatch) {
+                throw new Error(`parse_error:http_status status=${statusMatch[1]}`)
+            }
+            throw error
         }
-
-        const html = await response.text()
         const attempts: Array<{ container: string; getText: () => string | null }> = [
             {
                 container: 'DEFAULT_SCOPE',
@@ -306,7 +297,6 @@ export class Downloader {
             }
         ]
 
-        let lastParseError: unknown = null
         let anyContainerSeen = false
         let candidates: { resolution: string; score: number; bitrate: number; url: string }[] = []
 
@@ -322,7 +312,6 @@ export class Downloader {
                 // JSON parse failures should allow fallback; container-shape errors should be thrown.
                 const msg = String(e instanceof Error ? e.message : e)
                 if (msg.includes('Unexpected') || msg.includes('JSON')) {
-                    lastParseError = e
                     continue
                 }
                 throw e
@@ -344,10 +333,7 @@ export class Downloader {
 
         for (const c of candidates) {
             try {
-                const testRes = await fetch(c.url, {
-                    method: 'HEAD',
-                    credentials: 'include'
-                })
+                const testRes = await fetchHead(c.url)
 
                 const contentType = testRes.headers.get('content-type') || ''
                 const contentLength = parseInt(testRes.headers.get('content-length') || '0')
@@ -355,20 +341,14 @@ export class Downloader {
                 const hasSize = contentLength > 10000
 
                 if (testRes.status === 200 && isVideo && hasSize) {
-                    const videoRes = await fetch(c.url, {credentials: 'include'})
-
-                    if (!videoRes.ok) {
-                        console.warn('视频下载失败:', videoRes.status)
-                        continue
-                    }
-
-                    const videoBytes = await videoRes.arrayBuffer()
+                    const binary = await fetchBinary(c.url)
+                    const videoBytes = binary.bytes
                     const meta = VideoHelper.parseMp4Meta(videoBytes)
 
                     return {
                         bytes: videoBytes,
-                        mime: contentType || 'video/mp4',
-                        name: `tiktok_${Date.now()}.mp4`,
+                        mime: binary.contentType || contentType || 'video/mp4',
+                        name: filename,
                         meta
                     }
                 }
@@ -378,5 +358,16 @@ export class Downloader {
         }
 
         throw new Error('parse_error:all_video_urls_failed')
+    }
+
+    public static async downloadTikTokVideo(): Promise<DownloadedVideo> {
+        const pageUrl = window.location.href
+        const videoId = getVideoIdFromPageUrl(pageUrl)
+        return await Downloader.downloadFromPage(pageUrl, videoId, `tiktok_${Date.now()}.mp4`)
+    }
+
+    public static async downloadTikTokVideoByPageUrl(pageUrl: string, filename?: string): Promise<DownloadedVideo> {
+        const videoId = getVideoIdFromPageUrl(pageUrl)
+        return await Downloader.downloadFromPage(pageUrl, videoId, filename || `${videoId}.mp4`)
     }
 }

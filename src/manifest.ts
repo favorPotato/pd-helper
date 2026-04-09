@@ -30,5 +30,10 @@ export default {
             run_at: 'document_idle'
         }
     ],
-    web_accessible_resources: []
+    web_accessible_resources: [
+        {
+            resources: ['page-bridge.js'],
+            matches: ['*://*.tiktok.com/*']
+        }
+    ]
 }
