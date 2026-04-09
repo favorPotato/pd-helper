@@ -1,8 +1,21 @@
-import type {DownloadMessage, ScriptApiRequestMessage, ScriptApiResponse, ScriptApiUploadFile} from '../types'
+import type {DownloadMessage, ScriptApiRequestMessage, ScriptApiResponse} from '../types'
 import {idbGet, idbPut, idbDelete, IDB_KEY, clearStaleCache, parseVideoMeta, type CachedVideo} from './idb'
 import {truncateError} from './errors'
 import {loadHeaderCache, getHeaderValues, getHeaderStatus, setupHeaderListener} from './header-cache'
 import {SCRIPT_API_BASE, SCRIPT_API_KEY} from './env'
+import {
+    NOX_LOG,
+    PREPARE_IG_TAB,
+    PREPARE_TK_TAB,
+    type PrepareIgTabResponse,
+    type PrepareTkPageContextResponse,
+    TK_COLLECT_PROGRESS,
+    TK_COLLECT_REMOTE,
+    TK_COLLECT_VIA_TAB,
+    TK_PREPARE_PAGE_CONTEXT
+} from './remote-collect'
+import {delay} from './timing'
+import {ensureTabReady, IG_TAB, TK_TAB} from './tab-manager'
 
 // Bridge lock to prevent multi-tab race conditions
 let bridgeLock = {held: false, since: 0}
@@ -20,8 +33,6 @@ function acquireLock(): boolean {
 function releaseLock(): void {
     bridgeLock = {held: false, since: 0}
 }
-
-const IG_MATCH_RE = /^https:\/\/www\.instagram\.com\//
 
 function parseJsonIfPossible(text: string): unknown {
     if (!text) return null
@@ -124,6 +135,9 @@ function classifyIgTabError(e: unknown): {reason: string; error: string} {
     if (lower.includes('timeout_waiting_for_ig_tab_complete')) {
         return {reason: 'ig_tab_timeout', error}
     }
+    if (lower.includes('timeout_waiting_for_tab_complete')) {
+        return {reason: 'ig_tab_timeout', error}
+    }
     if (lower.includes('could not establish connection') || lower.includes('receiving end does not exist')) {
         return {reason: 'ig_sendMessage_failed', error}
     }
@@ -133,79 +147,58 @@ function classifyIgTabError(e: unknown): {reason: string; error: string} {
     return {reason: 'ig_tab_error', error}
 }
 
-function delay(ms: number): Promise<void> {
-    return new Promise((r) => setTimeout(r, ms))
-}
-
-async function getOrCreateIgTab(): Promise<chrome.tabs.Tab> {
-    const tabs = await chrome.tabs.query({url: 'https://www.instagram.com/*'})
-
-    if (tabs.length > 0) {
-        return tabs[0]
-    }
-
-    return await chrome.tabs.create({
-        url: 'https://www.instagram.com/',
-        active: false
-    })
-}
-
 async function ensureIgTabReady(): Promise<{ok: true; tab: chrome.tabs.Tab} | {ok: false; reason: string; error: string}> {
-    try {
-        const tab = await getOrCreateIgTab()
-        try {
-            await waitForTabComplete(tab.id!)
-        } catch (e) {
-            return {ok: false, ...classifyIgTabError(new Error(`ig_wait_complete_failed: ${String(e)}`))}
-        }
-
-        try {
-            await ensureContentScript(tab.id!)
-        } catch (e) {
-            return {ok: false, ...classifyIgTabError(new Error(`ig_ensure_cs_failed: ${String(e)}`))}
-        }
-
-        return {ok: true, tab}
-    } catch (e) {
-        return {ok: false, ...classifyIgTabError(e)}
-    }
-}
-
-async function waitForTabComplete(tabId: number, timeoutMs = 20000): Promise<void> {
-    const start = Date.now()
-    while (Date.now() - start < timeoutMs) {
-        const tab = await chrome.tabs.get(tabId)
-        if (tab.status === 'complete' && IG_MATCH_RE.test(tab.url || '')) return
-        await delay(250)
-    }
-    throw new Error('timeout_waiting_for_ig_tab_complete')
-}
-
-async function pingContentScript(tabId: number): Promise<unknown> {
-    return await chrome.tabs.sendMessage(tabId, {type: 'ping'})
-}
-
-async function ensureContentScript(tabId: number): Promise<void> {
-    try {
-        await pingContentScript(tabId)
-        return
-    } catch {
+    const prepared = await ensureTabReady(IG_TAB)
+    if (!prepared.ok) {
+        return {ok: false, ...classifyIgTabError(prepared.error)}
     }
 
-    await chrome.scripting.executeScript({
-        target: {tabId},
-        files: ['content.js']
+    return prepared
+}
+
+async function ensureTikTokTabReady(returnToTabId?: number): Promise<{ok: true; tab: chrome.tabs.Tab; href: string} | {ok: false; reason: string; error: string}> {
+    const prepared = await ensureTabReady(TK_TAB, {
+        activate: true,
+        readySelector: '#app',
+        returnToTabId,
+        selectorTimeoutMs: 15000
     })
+    if (!prepared.ok) {
+        return {ok: false, reason: 'tk_tab_error', error: prepared.error}
+    }
 
-    await delay(500)
-    await pingContentScript(tabId)
+    let lastError = 'tk_page_context_not_ready'
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+            const warmup = await chrome.tabs.sendMessage(prepared.tab.id!, {type: TK_PREPARE_PAGE_CONTEXT}) as PrepareTkPageContextResponse | undefined
+            if (warmup?.ok) {
+                return {
+                    ok: true,
+                    tab: prepared.tab,
+                    href: typeof warmup.href === 'string' ? warmup.href : (prepared.tab.url || '')
+                }
+            }
+
+            lastError = warmup?.error || lastError
+        } catch (error) {
+            lastError = error instanceof Error ? error.message : String(error)
+        }
+
+        await delay(400)
+    }
+
+    return {
+        ok: false,
+        reason: 'tk_page_context_error',
+        error: truncateError(lastError, 500)
+    }
 }
 
 setupHeaderListener()
 void loadHeaderCache()
 void clearStaleCache()
 
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (!request || typeof request !== 'object') return
 
     if (request.action === 'download') {
@@ -316,15 +309,73 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
         return true
     }
 
-    if (request.type === 'prepare_ig_tab') {
+    if (request.type === PREPARE_IG_TAB) {
         ;(async () => {
             const prepared = await ensureIgTabReady()
+            if (!prepared.ok) {
+                const response: PrepareIgTabResponse = {ok: false, reason: prepared.reason, error: prepared.error}
+                sendResponse(response)
+                return
+            }
+
+            const response: PrepareIgTabResponse = {ok: true, tabId: prepared.tab.id}
+            sendResponse(response)
+        })()
+        return true
+    }
+
+    if (request.type === PREPARE_TK_TAB) {
+        ;(async () => {
+            const prepared = await ensureTikTokTabReady(sender.tab?.id)
             if (!prepared.ok) {
                 sendResponse({ok: false, reason: prepared.reason, error: prepared.error})
                 return
             }
 
-            sendResponse({ok: true, tabId: prepared.tab.id})
+            sendResponse({ok: true, tabId: prepared.tab.id, href: prepared.href})
+        })()
+        return true
+    }
+
+    if (request.type === TK_COLLECT_PROGRESS) {
+        ;(async () => {
+            try {
+                const clientTabId = typeof request.clientTabId === 'number' ? request.clientTabId : 0
+                const message = typeof request.message === 'string' ? request.message : ''
+                if (clientTabId && message) {
+                    await chrome.tabs.sendMessage(clientTabId, {type: NOX_LOG, message})
+                }
+                sendResponse({ok: true})
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
+        })()
+        return true
+    }
+
+    if (request.type === TK_COLLECT_VIA_TAB) {
+        ;(async () => {
+            try {
+                const tabId = typeof request.tabId === 'number' ? request.tabId : 0
+                const clientTabId = sender.tab?.id || 0
+                if (!tabId) {
+                    sendResponse({ok: false, error: 'invalid_tab_id'})
+                    return
+                }
+
+                const result = await chrome.tabs.sendMessage(tabId, {
+                    type: TK_COLLECT_REMOTE,
+                    clientTabId,
+                    username: request.username,
+                    maxVideoCount: request.maxVideoCount,
+                    startYear: request.startYear,
+                    endYear: request.endYear,
+                    filenamePrefix: request.filenamePrefix
+                })
+                sendResponse(result)
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
         })()
         return true
     }

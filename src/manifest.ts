@@ -20,12 +20,13 @@ export default {
         '*://*.tiktok.com/*',
         '*://*.tiktokcdn.com/*',
         '*://*.tiktokcdn-us.com/*',
-        '*://*.tiktokv.com/*'
+        '*://*.tiktokv.com/*',
+        '*://*.noxinfluencer.com/*'
     ],
     background: {service_worker: 'background.js'},
     content_scripts: [
         {
-            matches: ['*://*.instagram.com/*', '*://*.tiktok.com/*'],
+            matches: ['*://*.instagram.com/*', '*://*.tiktok.com/*', '*://*.noxinfluencer.com/*'],
             js: ['content.js'],
             run_at: 'document_idle'
         }

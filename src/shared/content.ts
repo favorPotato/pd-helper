@@ -13,12 +13,24 @@ declare const window: Window & {
     __IG_BRIDGE_CS_LOADED__?: boolean
     __IG_SETUP_LOADED__?: boolean
     __TT_SETUP_LOADED__?: boolean
+    __NOX_SETUP_LOADED__?: boolean
+    __IG_HELPER_PING_HANDLER_LOADED__?: boolean
 }
 
 void start()
 
 async function start(): Promise<void> {
     if (window.top !== window) return
+
+    if (!window.__IG_HELPER_PING_HANDLER_LOADED__) {
+        window.__IG_HELPER_PING_HANDLER_LOADED__ = true
+        chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+            if (msg?.type === 'ping') {
+                sendResponse({ok: true, from: 'content_script', href: location.href})
+                return
+            }
+        })
+    }
 
     const hostname = window.location.hostname
 
@@ -44,15 +56,18 @@ async function start(): Promise<void> {
         setupTikTok()
         return
     }
+
+    if (hostname.endsWith('.noxinfluencer.com')) {
+        if (window.__NOX_SETUP_LOADED__) return
+        window.__NOX_SETUP_LOADED__ = true
+        const {setup: setupNox} = await import('../platforms/nox/main')
+        setupNox()
+        return
+    }
 }
 
 function initUploadHandler(executeUpload: ExecuteUploadFn): void {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-        if (msg.type === 'ping') {
-            sendResponse({ok: true, from: 'instagram_content', href: location.href})
-            return
-        }
-
         if (msg.type !== 'start_upload') return
 
         ;(async () => {

@@ -1,8 +1,16 @@
 import {Downloader} from './downloader'
 import {Collector} from './collector'
+import {ensureTikTokPageContextReady} from './client'
 import {Relay} from './relay'
 import {UiHelper, UrlHelper} from './helpers'
+import {requestCollectVideoCount, requestCollectYearRange} from '../../shared/collect-params'
 import {truncateError} from '../../shared/errors'
+import {
+    reportRemoteCollectProgress,
+    type PrepareTkPageContextResponse,
+    TK_COLLECT_REMOTE,
+    TK_PREPARE_PAGE_CONTEXT
+} from '../../shared/remote-collect'
 
 declare const window: Window & {
     __TT_BRIDGE_HANDLER_LOADED__?: boolean
@@ -11,51 +19,6 @@ declare const window: Window & {
 let downloadInProgress = false
 let bridgeInProgress = false
 let collectInProgress = false
-
-interface CollectYearRange {
-    startYear: number
-    endYear: number
-    label: string
-}
-
-function requestCollectVideoCount(): number | null {
-    const input = window.prompt('请输入采集视频数量（默认 10）', '')
-    if (input === null) return null
-
-    const trimmed = input.trim()
-    if (!trimmed) return 10
-
-    const parsed = Number.parseInt(trimmed, 10)
-    if (!Number.isFinite(parsed) || parsed <= 0) return 10
-    return parsed
-}
-
-function parseCollectYearRange(input: string): CollectYearRange {
-    const trimmed = input.trim()
-    const normalized = trimmed || '2025-2026'
-    const single = normalized.match(/^(\d{4})$/)
-    if (single) {
-        const year = Number.parseInt(single[1], 10)
-        return {startYear: year, endYear: year, label: String(year)}
-    }
-
-    const range = normalized.match(/^(\d{4})\s*-\s*(\d{4})$/)
-    if (range) {
-        const left = Number.parseInt(range[1], 10)
-        const right = Number.parseInt(range[2], 10)
-        const startYear = Math.min(left, right)
-        const endYear = Math.max(left, right)
-        return {startYear, endYear, label: `${startYear}-${endYear}`}
-    }
-
-    return {startYear: 2025, endYear: 2026, label: '2025-2026'}
-}
-
-function requestCollectYearRange(): CollectYearRange | null {
-    const input = window.prompt('请输入采集年份（默认 2025-2026）', '')
-    if (input === null) return null
-    return parseCollectYearRange(input)
-}
 
 function initTikTokMessageHandler(): void {
     if (window.__TT_BRIDGE_HANDLER_LOADED__) return
@@ -81,6 +44,70 @@ function initTikTokMessageHandler(): void {
                     })
                 } catch (e) {
                     sendResponse({ok: false, error: e instanceof Error ? e.message : String(e)})
+                }
+            })()
+            return true
+        }
+
+        if (msg.type === TK_COLLECT_REMOTE) {
+            ;(async () => {
+                try {
+                    const clientTabId = typeof msg.clientTabId === 'number' ? msg.clientTabId : 0
+                    const username = typeof msg.username === 'string' ? msg.username : ''
+                    const maxVideoCount = typeof msg.maxVideoCount === 'number' ? msg.maxVideoCount : 10
+                    const startYear = typeof msg.startYear === 'number' ? msg.startYear : 2025
+                    const endYear = typeof msg.endYear === 'number' ? msg.endYear : 2026
+                    const filenamePrefix = typeof msg.filenamePrefix === 'string' ? msg.filenamePrefix : ''
+                    const onSelectedCount = (selectedCount: number, targetCount: number) => reportRemoteCollectProgress(clientTabId, `入选 ${selectedCount}/${targetCount}`)
+                    const onDownloadProgress = (downloadedCount: number, selectedCount: number, targetCount: number) => reportRemoteCollectProgress(clientTabId, `下载 ${downloadedCount}/${selectedCount}（目标 ${targetCount} 入选 ${selectedCount}）`)
+                    const onDownloadFailed = (videoId: string) => reportRemoteCollectProgress(clientTabId, `下载失败：${videoId}，已跳过`)
+                    const onLog = (message: string) => reportRemoteCollectProgress(clientTabId, message)
+
+                    const result = username
+                        ? await Collector.collectProfileByUsername(
+                            username,
+                            maxVideoCount,
+                            startYear,
+                            endYear,
+                            onSelectedCount,
+                            onDownloadProgress,
+                            onDownloadFailed,
+                            filenamePrefix,
+                            onLog
+                        )
+                        : await Collector.collectCurrentProfile(
+                            maxVideoCount,
+                            startYear,
+                            endYear,
+                            onSelectedCount,
+                            onDownloadProgress,
+                            onDownloadFailed,
+                            filenamePrefix,
+                            onLog
+                        )
+
+                    sendResponse({
+                        ok: true,
+                        filename: result.filename,
+                        videoCount: result.output.videos?.length || 0,
+                        downloadSummary: result.downloadSummary
+                    })
+                } catch (error) {
+                    sendResponse({ok: false, error: Collector.formatError(error)})
+                }
+            })()
+            return true
+        }
+
+        if (msg.type === TK_PREPARE_PAGE_CONTEXT) {
+            ;(async () => {
+                try {
+                    await ensureTikTokPageContextReady()
+                    const response: PrepareTkPageContextResponse = {ok: true, href: location.href}
+                    sendResponse(response)
+                } catch (error) {
+                    const response: PrepareTkPageContextResponse = {ok: false, error: Collector.formatError(error)}
+                    sendResponse(response)
                 }
             })()
             return true

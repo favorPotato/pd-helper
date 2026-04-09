@@ -4,7 +4,14 @@ import {
     TIKTOK_MIN_LIKE_RATE,
     TIKTOK_MIN_PLAY_COUNT
 } from '../../shared/env'
-import {createJsonArchiveFile, createTextArchiveFile, createZipBlob, type ArchiveFile} from '../../shared/archive'
+import {
+    createJsonArchiveFile,
+    createTextArchiveFile,
+    createZipBlob,
+    downloadBlob,
+    formatTimestampForFilename,
+    type ArchiveFile
+} from '../../shared/archive'
 import {truncateError} from '../../shared/errors'
 import {sleepRandom} from '../../shared/timing'
 import {Downloader} from './downloader'
@@ -24,6 +31,13 @@ interface DownloadSummary {
 
 interface DownloadedArchiveVideo {
     file: ArchiveFile
+}
+
+type CollectLogFn = (message: string) => void | Promise<void>
+
+async function emitCollectLog(logger: CollectLogFn | undefined, message: string): Promise<void> {
+    if (!logger) return
+    await logger(message)
 }
 
 function asObject(value: unknown): AnyObject | null {
@@ -223,6 +237,10 @@ function buildVideoUrl(username: string, videoId: string): string {
     return `https://www.tiktok.com/@${username}/video/${videoId}`
 }
 
+function buildProfileUrl(username: string): string {
+    return `https://www.tiktok.com/@${username}`
+}
+
 function qualifiesVideo(stats: {
     playCount: number;
     diggCount: number;
@@ -337,39 +355,26 @@ function mapCommentResponse(page: CommentPageResponse, authorUserId: string): {
     }
 }
 
-function formatTimestampForFilename(now: Date): string {
-    const pad = (value: number, width = 2) => String(value).padStart(width, '0')
-    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-}
-
-async function downloadBlob(filename: string, blob: Blob): Promise<void> {
-    const url = URL.createObjectURL(blob)
-    try {
-        await chrome.runtime.sendMessage({action: 'download', url, filename})
-    } finally {
-        setTimeout(() => URL.revokeObjectURL(url), 15000)
-    }
-}
-
-async function downloadSelectedVideo(videoUrl: string, videoId: string): Promise<DownloadedArchiveVideo> {
-    const downloaded = await Downloader.downloadTikTokVideoByPageUrl(videoUrl, `${videoId}.mp4`)
+async function downloadSelectedVideo(videoUrl: string, videoId: string, filenamePrefix = ''): Promise<DownloadedArchiveVideo> {
+    const filename = `${filenamePrefix}${videoId}.mp4`
+    const downloaded = await Downloader.downloadTikTokVideoByPageUrl(videoUrl, filename)
     return {
         file: {
-            filename: `${videoId}.mp4`,
+            filename,
             bytes: downloaded.bytes
         }
     }
 }
 
-async function loadProfileContext(): Promise<{
+async function loadProfileContext(username: string): Promise<{
     username: string;
     user: TikTokUser;
     requestEnv: RequestEnv;
     commentSetting: number
+    profileUrl: string
 }> {
-    const profileUrl = window.location.href
-    const username = UrlHelper.getUsernameFromProfilePage(profileUrl)
-    if (!username) throw new Error('无法解析主页用户名')
+    const normalizedUsername = username.trim().replace(/^@/, '')
+    const profileUrl = buildProfileUrl(normalizedUsername)
 
     const html = await fetchHtml(profileUrl)
     const scriptText = extractScriptContentById(html, '__UNIVERSAL_DATA_FOR_REHYDRATION__')
@@ -378,14 +383,21 @@ async function loadProfileContext(): Promise<{
 
     const jsonData = JSON.parse(scriptText)
 
-    const secUid = pickSecUid(findSecUidCandidates(jsonData), username)
-    const {user, requestEnv} = buildRequestEnv(jsonData, username, secUid)
+    const secUid = pickSecUid(findSecUidCandidates(jsonData), normalizedUsername)
+    const {user, requestEnv} = buildRequestEnv(jsonData, normalizedUsername, secUid)
     const root = asObject(jsonData) || {}
     const scope = asObject(root.__DEFAULT_SCOPE__) || {}
     const userDetail = asObject(scope['webapp.user-detail']) || {}
     const userInfo = asObject(userDetail.userInfo) || {}
     const rawUser = asObject(userInfo.user) || {}
-    return {username, user, requestEnv, commentSetting: toNumber(rawUser.commentSetting)}
+    const resolvedUsername = user.username || normalizedUsername
+    return {
+        username: resolvedUsername,
+        user,
+        requestEnv,
+        commentSetting: toNumber(rawUser.commentSetting),
+        profileUrl: buildProfileUrl(resolvedUsername)
+    }
 }
 
 async function fetchCommentsForVideo(
@@ -403,9 +415,11 @@ async function collectVideos(
     authorUserId: string,
     secUid: string,
     requestEnv: RequestEnv,
+    profileUrl: string,
     maxVideoCount: number,
     startYear: number,
-    endYear: number
+    endYear: number,
+    onLog?: CollectLogFn
 ): Promise<TikTokVideo[]> {
     const videos: TikTokVideo[] = []
     const seenVideoIds = new Set<string>()
@@ -414,7 +428,8 @@ async function collectVideos(
 
     while (videos.length < maxVideoCount) {
         page += 1
-        const pageResult = await fetchHotVideoPage(secUid, cursor, requestEnv, window.location.href)
+        await emitCollectLog(onLog, `拉取视频列表第 ${page} 页...`)
+        const pageResult = await fetchHotVideoPage(secUid, cursor, requestEnv, profileUrl)
         const items = pageResult.items
         if (items.length === 0) break
 
@@ -494,7 +509,8 @@ async function downloadCollectedVideos(
     videos: TikTokVideo[],
     targetCount: number,
     onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
-    onDownloadFailed?: (videoId: string) => void
+    onDownloadFailed?: (videoId: string) => void,
+    filenamePrefix = ''
 ): Promise<{ downloadSummary: DownloadSummary; downloadedFiles: ArchiveFile[] }> {
     const downloadedFiles: ArchiveFile[] = []
     const downloadSummary: DownloadSummary = {
@@ -507,10 +523,10 @@ async function downloadCollectedVideos(
     for (const video of videos) {
         try {
             downloadSummary.attempted += 1
-            const downloaded = await downloadSelectedVideo(video.videoUrl, video.videoId)
+            const downloaded = await downloadSelectedVideo(video.videoUrl, video.videoId, filenamePrefix)
             downloadedFiles.push(downloaded.file)
-            downloadedFiles.push(createJsonArchiveFile(`${video.videoId}.json`, video))
-            downloadedFiles.push(createTextArchiveFile(`${video.videoId}.txt`, `${video.videoUrl}\n\n`))
+            downloadedFiles.push(createJsonArchiveFile(`${filenamePrefix}${video.videoId}.json`, video))
+            downloadedFiles.push(createTextArchiveFile(`${filenamePrefix}${video.videoId}.txt`, `${video.videoUrl}\n\n`))
             downloadSummary.succeeded += 1
             onDownloadProgress?.(downloadSummary.succeeded, videos.length, targetCount)
         } catch (error) {
@@ -526,45 +542,62 @@ async function downloadCollectedVideos(
 }
 
 export class Collector {
-    static async collectCurrentProfile(
+    static async collectProfileByUsername(
+        username: string,
         maxVideoCount: number,
         startYear: number,
         endYear: number,
         onSelectedCount?: (selectedCount: number, targetCount: number) => void,
         onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
-        onDownloadFailed?: (videoId: string) => void
+        onDownloadFailed?: (videoId: string) => void,
+        filenamePrefix?: string,
+        onLog?: CollectLogFn
     ): Promise<{
         filename: string;
         output: TikTokProfileCollection
         downloadSummary: DownloadSummary
     }> {
-        const {user, requestEnv, username, commentSetting} = await loadProfileContext()
+        const normalizedUsername = username.trim().replace(/^@/, '')
+        if (!normalizedUsername) {
+            throw new Error('缺少 TikTok 用户名')
+        }
+
+        await emitCollectLog(onLog, `读取主页信息: @${normalizedUsername}`)
+        const {user, requestEnv, username: resolvedUsername, commentSetting, profileUrl} = await loadProfileContext(normalizedUsername)
+        await emitCollectLog(onLog, `主页信息就绪: @${resolvedUsername}`)
 
         if (commentSetting !== 0) {
             throw new Error('当前博主已关闭评论功能')
         }
 
+        await emitCollectLog(onLog, `开始筛选 ${startYear}-${endYear} 年视频...`)
         const videos = await collectVideos(
-            username,
+            resolvedUsername,
             user.userId,
             user.secUid,
             requestEnv,
+            profileUrl,
             maxVideoCount,
             startYear,
-            endYear
+            endYear,
+            onLog
         )
         if (videos.length === 0) {
             throw new Error('当前博主没有符合要求的视频')
         }
+        await emitCollectLog(onLog, `已筛出 ${videos.length} 个符合条件的视频`)
         onSelectedCount?.(videos.length, maxVideoCount)
+        await emitCollectLog(onLog, '开始下载入选视频并生成归档...')
         const {downloadSummary, downloadedFiles} = await downloadCollectedVideos(
             videos,
             maxVideoCount,
             onDownloadProgress,
-            onDownloadFailed
+            onDownloadFailed,
+            filenamePrefix || ''
         )
         const output: TikTokProfileCollection = {user, videos}
-        const baseName = `${username}_${formatTimestampForFilename(new Date())}`
+        const prefix = filenamePrefix || ''
+        const baseName = `${prefix}${resolvedUsername}_${formatTimestampForFilename(new Date())}`
         const jsonFilename = `${baseName}.json`
         const filename = `${baseName}.zip`
         console.log('[TikTok Collect]', output)
@@ -573,7 +606,40 @@ export class Collector {
             ...downloadedFiles
         ])
         await downloadBlob(filename, archiveBlob)
+        await emitCollectLog(onLog, `归档已生成: ${filename}`)
         return {filename, output, downloadSummary}
+    }
+
+    static async collectCurrentProfile(
+        maxVideoCount: number,
+        startYear: number,
+        endYear: number,
+        onSelectedCount?: (selectedCount: number, targetCount: number) => void,
+        onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
+        onDownloadFailed?: (videoId: string) => void,
+        filenamePrefix?: string,
+        onLog?: CollectLogFn
+    ): Promise<{
+        filename: string;
+        output: TikTokProfileCollection
+        downloadSummary: DownloadSummary
+    }> {
+        const username = UrlHelper.getUsernameFromProfilePage(window.location.href)
+        if (!username) {
+            throw new Error('当前页面不是博主主页')
+        }
+
+        return await Collector.collectProfileByUsername(
+            username,
+            maxVideoCount,
+            startYear,
+            endYear,
+            onSelectedCount,
+            onDownloadProgress,
+            onDownloadFailed,
+            filenamePrefix,
+            onLog
+        )
     }
 
     static formatError(error: unknown): string {

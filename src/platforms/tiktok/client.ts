@@ -64,6 +64,15 @@ function withDefaultCredentials(init: RequestInit = {}): RequestInit {
     }
 }
 
+function isTikTokUrl(url: string): boolean {
+    try {
+        const hostname = new URL(url, window.location.origin).hostname
+        return hostname.endsWith('.tiktok.com') || hostname === 'tiktok.com'
+    } catch {
+        return false
+    }
+}
+
 async function request(url: string, init: RequestInit = {}): Promise<Response> {
     return await fetch(url, withDefaultCredentials(init))
 }
@@ -196,6 +205,19 @@ async function pageFetch(url: string, init: RequestInit = {}, timeoutMs = 15000)
     return payload
 }
 
+export async function ensureTikTokPageContextReady(): Promise<void> {
+    const payload = await pageFetch(window.location.href, {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'include',
+        headers: {accept: 'text/html'}
+    })
+
+    if (!payload.text.trim()) {
+        throw new Error('page_context_empty_response')
+    }
+}
+
 function toNumber(value: unknown): number {
     const num = typeof value === 'number' ? value : Number(value)
     return Number.isFinite(num) ? num : 0
@@ -269,6 +291,19 @@ function getItemList(response: ApiObject): unknown[] {
 }
 
 export async function fetchHtml(url: string): Promise<string> {
+    if (isTikTokUrl(url)) {
+        const payload = await pageFetch(url, {
+            method: 'GET',
+            mode: 'cors',
+            credentials: 'include',
+            headers: {accept: 'text/html'}
+        })
+        if (!payload.text.trim()) {
+            throw new Error('响应体为空')
+        }
+        return payload.text
+    }
+
     const response = await request(url, {
         method: 'GET',
         headers: {accept: 'text/html'}

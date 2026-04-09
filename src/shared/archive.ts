@@ -12,6 +12,11 @@ function toUint8Array(bytes: ArrayBuffer | Uint8Array): Uint8Array {
     return new Uint8Array(bytes)
 }
 
+export function formatTimestampForFilename(now: Date): string {
+    const pad = (value: number, width = 2) => String(value).padStart(width, '0')
+    return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+}
+
 export function createZipBlob(files: ArchiveFile[]): Blob {
     const entries: Record<string, Uint8Array> = {}
     for (const file of files) {
@@ -33,5 +38,14 @@ export function createTextArchiveFile(filename: string, text: string): ArchiveFi
     return {
         filename,
         bytes: strToU8(text)
+    }
+}
+
+export async function downloadBlob(filename: string, blob: Blob): Promise<void> {
+    const url = URL.createObjectURL(blob)
+    try {
+        await chrome.runtime.sendMessage({action: 'download', url, filename})
+    } finally {
+        setTimeout(() => URL.revokeObjectURL(url), 15000)
     }
 }

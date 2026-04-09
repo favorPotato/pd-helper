@@ -1,4 +1,4 @@
-export type Platform = 'tiktok' | 'instagram' | 'unknown';
+export type Platform = 'tiktok' | 'instagram' | 'nox' | 'unknown';
 
 export interface OverlayButton {
     text: string;
@@ -115,6 +115,7 @@ export class FixedOverlay {
       }
       .status.tiktok { background: #1a1a1a; color: #fff; }
       .status.instagram { background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888); color: #fff; }
+      .status.nox { background: #ff6b35; color: #fff; }
       .status.unknown { background: #e0e0e0; color: #666; }
       
       .buttons {
@@ -200,6 +201,10 @@ export class FixedOverlay {
         background: #111;
         box-shadow: 0 6px 18px rgba(0,0,0,0.45);
       }
+      :host([data-ig-helper-collapsed="true"][data-ig-helper-platform="nox"]) .card {
+        background: #ff6b35;
+        box-shadow: 0 6px 18px rgba(255, 107, 53, 0.35);
+      }
       :host([data-ig-helper-collapsed="true"][data-ig-helper-platform="unknown"]) .card {
         background: #444;
       }
@@ -263,6 +268,13 @@ export class FixedOverlay {
         this.setCollapsed(this.collapsed);
     }
 
+    private getCollapsedLabel(): string {
+        if (this.platform === 'instagram') return 'IG';
+        if (this.platform === 'tiktok') return 'TK';
+        if (this.platform === 'nox') return 'NOX';
+        return 'IG';
+    }
+
     private setCollapsed(collapsed: boolean) {
         this.collapsed = collapsed;
         const host = document.getElementById(FixedOverlay.HOST_ID);
@@ -270,7 +282,7 @@ export class FixedOverlay {
             host.setAttribute('data-ig-helper-collapsed', collapsed.toString());
         }
         if (this.collapseButton) {
-            this.collapseButton.textContent = collapsed ? 'IG' : '-';
+            this.collapseButton.textContent = collapsed ? this.getCollapsedLabel() : '-';
             const label = collapsed ? 'Expand' : 'Collapse';
             this.collapseButton.setAttribute('aria-label', label);
             this.collapseButton.setAttribute('title', label);
@@ -335,6 +347,21 @@ export class FixedOverlay {
         }
 
         this.syncEnabledAttribute();
+    }
+
+    public setButtonText(indexOrText: number | string, text: string) {
+        let target: { element: HTMLButtonElement; config: OverlayButton } | undefined;
+
+        if (typeof indexOrText === 'number') {
+            target = this.buttons[indexOrText];
+        } else {
+            target = this.buttons.find(b => b.config.text === indexOrText);
+        }
+
+        if (target) {
+            target.element.textContent = text;
+            target.config.text = text;
+        }
     }
 
     public setButtonEnabled(indexOrText: number | string, enabled: boolean) {

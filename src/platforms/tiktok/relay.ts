@@ -1,6 +1,8 @@
 import {Downloader} from './downloader'
 import type {BridgeResult, Mp4Meta} from './types'
 import {truncateError} from '../../shared/errors'
+import {safeSendMessage} from '../../shared/messaging'
+import {PREPARE_IG_TAB, type PrepareIgTabResponse} from '../../shared/remote-collect'
 
 export class Relay {
     static async executeDownloadAndBridge(caption = ''): Promise<BridgeResult> {
@@ -21,7 +23,7 @@ export class Relay {
                 return {ok: false, error: '视频缓存失败'}
             }
 
-            const uploadResult = await Relay.safeSendMessage<{
+            const uploadResult = await safeSendMessage<{
                 ok: boolean
                 reason?: string
                 error?: string
@@ -74,30 +76,6 @@ export class Relay {
         }
     }
 
-    private static checkChromeRuntime(): boolean {
-        if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
-            console.error('[TikTok Bridge] chrome.runtime not available')
-            return false
-        }
-        return true
-    }
-
-    private static async safeSendMessage<T>(message: object): Promise<T | null> {
-        if (!Relay.checkChromeRuntime()) {
-            throw new Error('Extension context invalidated. Please refresh the page.')
-        }
-
-        try {
-            return await chrome.runtime.sendMessage(message) as T
-        } catch (e: unknown) {
-            const msg = e instanceof Error ? e.message : String(e)
-            if (msg.includes('Extension context invalidated') || msg.includes('Could not establish connection')) {
-                throw new Error('Extension context invalidated. Please refresh the page.')
-            }
-            throw e
-        }
-    }
-
     private static async storeVideoToCache(videoData: {
         bytes: ArrayBuffer
         mime: string
@@ -111,7 +89,7 @@ export class Relay {
 
         const bytesArray = Array.from(new Uint8Array(videoData.bytes))
 
-        const result = await Relay.safeSendMessage<{ ok: boolean; error?: string }>({
+        const result = await safeSendMessage<{ ok: boolean; error?: string }>({
             type: 'cache_store_whole',
             bytes: bytesArray,
             mime: videoData.mime,
@@ -123,11 +101,7 @@ export class Relay {
     }
 
     private static async prepareIGTab(): Promise<void> {
-        const result = await Relay.safeSendMessage<{
-            ok: boolean;
-            reason?: string;
-            error?: string
-        }>({type: 'prepare_ig_tab'})
+        const result = await safeSendMessage<PrepareIgTabResponse>({type: PREPARE_IG_TAB})
         if (!result?.ok) {
             const reason = result?.reason || 'prepare_ig_tab_failed'
             const detail = truncateError(result?.error || 'unknown', 500)
