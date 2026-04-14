@@ -14,7 +14,7 @@ import {
 } from '../../shared/archive'
 import {truncateError} from '../../shared/errors'
 import {sleepRandom} from '../../shared/timing'
-import {Downloader} from './downloader'
+import {Downloader, getDownloadCandidatesFromItem, type DownloadCandidate} from './downloader'
 import type {CommentPageResponse, RequestEnv} from './client'
 import {fetchCommentPage, fetchHotVideoPage, fetchHtml} from './client'
 import type {TikTokComment, TikTokCommentSummary, TikTokProfileCollection, TikTokUser, TikTokVideo} from './types'
@@ -31,6 +31,10 @@ interface DownloadSummary {
 
 interface DownloadedArchiveVideo {
     file: ArchiveFile
+}
+
+interface CollectedVideo extends TikTokVideo {
+    downloadCandidates: DownloadCandidate[]
 }
 
 type CollectLogFn = (message: string) => void | Promise<void>
@@ -355,15 +359,20 @@ function mapCommentResponse(page: CommentPageResponse, authorUserId: string): {
     }
 }
 
-async function downloadSelectedVideo(videoUrl: string, videoId: string, filenamePrefix = ''): Promise<DownloadedArchiveVideo> {
-    const filename = `${filenamePrefix}${videoId}.mp4`
-    const downloaded = await Downloader.downloadTikTokVideoByPageUrl(videoUrl, filename)
+async function downloadSelectedVideo(video: CollectedVideo, filenamePrefix = ''): Promise<DownloadedArchiveVideo> {
+    const filename = `${filenamePrefix}${video.videoId}.mp4`
+    const downloaded = await Downloader.downloadTikTokVideoByCandidates(video.downloadCandidates, video.videoUrl, filename)
     return {
         file: {
             filename,
             bytes: downloaded.bytes
         }
     }
+}
+
+function toPublicVideo(video: CollectedVideo): TikTokVideo {
+    const {downloadCandidates: _downloadCandidates, ...publicVideo} = video
+    return publicVideo
 }
 
 async function loadProfileContext(username: string): Promise<{
@@ -420,8 +429,8 @@ async function collectVideos(
     startYear: number,
     endYear: number,
     onLog?: CollectLogFn
-): Promise<TikTokVideo[]> {
-    const videos: TikTokVideo[] = []
+): Promise<CollectedVideo[]> {
+    const videos: CollectedVideo[] = []
     const seenVideoIds = new Set<string>()
     let cursor = 0
     let page = 0
@@ -448,6 +457,8 @@ async function collectVideos(
             const stats = extractStats(obj)
             const videoDuration = extractVideoDuration(obj)
             if (!qualifiesVideo(stats, videoDuration)) continue
+            const downloadCandidates = getDownloadCandidatesFromItem(obj)
+            if (downloadCandidates.length === 0) continue
             seenVideoIds.add(videoId)
             const descMeta = extractDescAndHashtags(obj.desc, obj)
 
@@ -485,7 +496,8 @@ async function collectVideos(
                 privateItem: obj.privateItem === true,
                 secret: obj.secret === true,
                 commentSummary,
-                comments
+                comments,
+                downloadCandidates
             })
 
             if (videos.length >= maxVideoCount) {
@@ -506,7 +518,7 @@ async function collectVideos(
 }
 
 async function downloadCollectedVideos(
-    videos: TikTokVideo[],
+    videos: CollectedVideo[],
     targetCount: number,
     onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
     onDownloadFailed?: (videoId: string) => void,
@@ -523,9 +535,10 @@ async function downloadCollectedVideos(
     for (const video of videos) {
         try {
             downloadSummary.attempted += 1
-            const downloaded = await downloadSelectedVideo(video.videoUrl, video.videoId, filenamePrefix)
+            const downloaded = await downloadSelectedVideo(video, filenamePrefix)
+            const publicVideo = toPublicVideo(video)
             downloadedFiles.push(downloaded.file)
-            downloadedFiles.push(createJsonArchiveFile(`${filenamePrefix}${video.videoId}.json`, video))
+            downloadedFiles.push(createJsonArchiveFile(`${filenamePrefix}${video.videoId}.json`, publicVideo))
             downloadedFiles.push(createTextArchiveFile(`${filenamePrefix}${video.videoId}.txt`, `${video.videoUrl}\n\n`))
             downloadSummary.succeeded += 1
             onDownloadProgress?.(downloadSummary.succeeded, videos.length, targetCount)
@@ -595,7 +608,8 @@ export class Collector {
             onDownloadFailed,
             filenamePrefix || ''
         )
-        const output: TikTokProfileCollection = {user, videos}
+        const outputVideos = videos.map(toPublicVideo)
+        const output: TikTokProfileCollection = {user, videos: outputVideos}
         const prefix = filenamePrefix || ''
         const baseName = `${prefix}${resolvedUsername}_${formatTimestampForFilename(new Date())}`
         const jsonFilename = `${baseName}.json`

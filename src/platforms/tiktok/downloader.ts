@@ -110,6 +110,13 @@ interface BitrateInfo {
     PlayAddr?: { UrlList?: string[] }
 }
 
+export interface DownloadCandidate {
+    resolution: string
+    score: number
+    bitrate: number
+    url: string
+}
+
 function asObject(v: unknown): AnyObject | null {
     if (!v || typeof v !== 'object' || Array.isArray(v)) return null
     return v as AnyObject
@@ -213,14 +220,14 @@ function findVideoNodeByVideoId(root: unknown, videoId: string): { node: unknown
     return {node: null, sawCandidate}
 }
 
-function buildCandidatesFromNode(node: unknown): { resolution: string; score: number; bitrate: number; url: string }[] {
+function buildCandidatesFromNode(node: unknown): DownloadCandidate[] {
     const bitrateInfo = extractBitrateInfoFromNode(node)
     if (!bitrateInfo) {
         const urls = extractUrlsFromNode(node)
         return urls.map((url) => ({resolution: '0p', score: 0, bitrate: 0, url}))
     }
 
-    const candidates: { resolution: string; score: number; bitrate: number; url: string }[] = []
+    const candidates: DownloadCandidate[] = []
     bitrateInfo.forEach((info: BitrateInfo) => {
         const resolution = parseResolution(info.GearName)
         const urls = (info.PlayAddr?.UrlList || []).filter(isValidHost)
@@ -236,8 +243,32 @@ function buildCandidatesFromNode(node: unknown): { resolution: string; score: nu
     return candidates
 }
 
+function sortAndDeduplicateCandidates(candidates: DownloadCandidate[]): DownloadCandidate[] {
+    const unique = new Map<string, DownloadCandidate>()
+    for (const candidate of candidates) {
+        const existing = unique.get(candidate.url)
+        if (!existing) {
+            unique.set(candidate.url, candidate)
+            continue
+        }
+
+        if (candidate.score > existing.score || (candidate.score === existing.score && candidate.bitrate > existing.bitrate)) {
+            unique.set(candidate.url, candidate)
+        }
+    }
+
+    return Array.from(unique.values()).sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score
+        return b.bitrate - a.bitrate
+    })
+}
+
+export function getDownloadCandidatesFromItem(item: unknown): DownloadCandidate[] {
+    return buildCandidatesFromNode(item)
+}
+
 function parseContainerJson(container: string, jsonText: string, videoId: string): {
-    candidates: { resolution: string; score: number; bitrate: number; url: string }[];
+    candidates: DownloadCandidate[];
     topKeys: string
 } {
     const root = JSON.parse(jsonText)
@@ -262,6 +293,36 @@ function parseContainerJson(container: string, jsonText: string, videoId: string
 }
 
 export class Downloader {
+    private static async downloadFromCandidates(candidates: DownloadCandidate[], filename: string, referrer?: string): Promise<DownloadedVideo> {
+        for (const candidate of sortAndDeduplicateCandidates(candidates)) {
+            try {
+                const testRes = await fetchHead(candidate.url, referrer)
+
+                const contentType = testRes.headers.get('content-type') || ''
+                const contentLength = parseInt(testRes.headers.get('content-length') || '0')
+                const isVideo = contentType.includes('video/')
+                const hasSize = contentLength > 10000
+
+                if (testRes.status === 200 && isVideo && hasSize) {
+                    const binary = await fetchBinary(candidate.url, referrer)
+                    const videoBytes = binary.bytes
+                    const meta = VideoHelper.parseMp4Meta(videoBytes)
+
+                    return {
+                        bytes: videoBytes,
+                        mime: binary.contentType || contentType || 'video/mp4',
+                        name: filename,
+                        meta
+                    }
+                }
+            } catch (error) {
+                console.warn('视频地址探测失败:', error)
+            }
+        }
+
+        throw new Error('parse_error:all_video_urls_failed')
+    }
+
     private static async downloadFromPage(pageUrl: string, videoId: string, filename: string): Promise<DownloadedVideo> {
 
         let html = ''
@@ -298,7 +359,7 @@ export class Downloader {
         ]
 
         let anyContainerSeen = false
-        let candidates: { resolution: string; score: number; bitrate: number; url: string }[] = []
+        let candidates: DownloadCandidate[] = []
 
         for (const a of attempts) {
             const raw = a.getText()
@@ -320,44 +381,12 @@ export class Downloader {
 
         if (candidates.length === 0) {
             if (anyContainerSeen) {
-                // Containers existed but all JSON.parse failed
-                throw new Error('parse_error:no_known_container')
+                throw new Error('parse_error:no_video_candidates_from_container')
             }
             throw new Error('parse_error:no_known_container')
         }
 
-        candidates.sort((a, b) => {
-            if (b.score !== a.score) return b.score - a.score
-            return b.bitrate - a.bitrate
-        })
-
-        for (const c of candidates) {
-            try {
-                const testRes = await fetchHead(c.url)
-
-                const contentType = testRes.headers.get('content-type') || ''
-                const contentLength = parseInt(testRes.headers.get('content-length') || '0')
-                const isVideo = contentType.includes('video/')
-                const hasSize = contentLength > 10000
-
-                if (testRes.status === 200 && isVideo && hasSize) {
-                    const binary = await fetchBinary(c.url)
-                    const videoBytes = binary.bytes
-                    const meta = VideoHelper.parseMp4Meta(videoBytes)
-
-                    return {
-                        bytes: videoBytes,
-                        mime: binary.contentType || contentType || 'video/mp4',
-                        name: filename,
-                        meta
-                    }
-                }
-            } catch (error) {
-                console.warn('视频地址探测失败:', error)
-            }
-        }
-
-        throw new Error('parse_error:all_video_urls_failed')
+        return await Downloader.downloadFromCandidates(candidates, filename, pageUrl)
     }
 
     public static async downloadTikTokVideo(): Promise<DownloadedVideo> {
@@ -366,8 +395,7 @@ export class Downloader {
         return await Downloader.downloadFromPage(pageUrl, videoId, `tiktok_${Date.now()}.mp4`)
     }
 
-    public static async downloadTikTokVideoByPageUrl(pageUrl: string, filename?: string): Promise<DownloadedVideo> {
-        const videoId = getVideoIdFromPageUrl(pageUrl)
-        return await Downloader.downloadFromPage(pageUrl, videoId, filename || `${videoId}.mp4`)
+    public static async downloadTikTokVideoByCandidates(candidates: DownloadCandidate[], referrer: string, filename?: string): Promise<DownloadedVideo> {
+        return await Downloader.downloadFromCandidates(candidates, filename || `tiktok_${Date.now()}.mp4`, referrer)
     }
 }

@@ -324,12 +324,12 @@ export async function fetchJson<T>(url: string, referrer?: string): Promise<T> {
     return parseJsonText<T>(text, response.headers.get('content-type') || '')
 }
 
-export async function fetchHead(url: string): Promise<Response> {
-    return await request(url, {method: 'HEAD'})
+export async function fetchHead(url: string, referrer?: string): Promise<Response> {
+    return await request(url, {method: 'HEAD', mode: 'cors', referrer})
 }
 
-export async function fetchBinary(url: string): Promise<BinaryResponse> {
-    const response = await request(url)
+export async function fetchBinary(url: string, referrer?: string): Promise<BinaryResponse> {
+    const response = await request(url, {method: 'GET', mode: 'cors', referrer})
     ensureOk(response)
     const contentType = response.headers.get('content-type') || ''
     const contentLength = Number.parseInt(response.headers.get('content-length') || '0', 10)
