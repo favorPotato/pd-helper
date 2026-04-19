@@ -370,6 +370,25 @@ async function downloadSelectedVideo(video: CollectedVideo, filenamePrefix = '')
     }
 }
 
+function buildTop5Summary(video: TikTokVideo): Record<string, unknown> {
+    const play = video.playCount
+    const ratio = (count: number) => play > 0 ? Math.round(count / play * 10000) / 100 : 0
+    const topComments = [...video.comments]
+        .sort((a, b) => b.diggCount - a.diggCount)
+        .slice(0, 5)
+        .map((c) => ({digg: c.diggCount, text: c.text}))
+    return {
+        videoId: video.videoId,
+        desc: video.desc || '',
+        duration: video.videoDuration,
+        diggPlayRatio: ratio(video.diggCount),
+        sharePlayRatio: ratio(video.shareCount),
+        collectPlayRatio: ratio(video.collectCount),
+        hashtags: video.hashtags,
+        topComments: topComments
+    }
+}
+
 function toPublicVideo(video: CollectedVideo): TikTokVideo {
     const {downloadCandidates: _downloadCandidates, ...publicVideo} = video
     return publicVideo
@@ -539,6 +558,7 @@ async function downloadCollectedVideos(
             const publicVideo = toPublicVideo(video)
             downloadedFiles.push(downloaded.file)
             downloadedFiles.push(createJsonArchiveFile(`${filenamePrefix}${video.videoId}.json`, publicVideo))
+            downloadedFiles.push(createJsonArchiveFile(`${filenamePrefix}${video.videoId}_top5.json`, buildTop5Summary(publicVideo)))
             downloadedFiles.push(createTextArchiveFile(`${filenamePrefix}${video.videoId}.txt`, `${video.videoUrl}\n\n`))
             downloadSummary.succeeded += 1
             onDownloadProgress?.(downloadSummary.succeeded, videos.length, targetCount)
