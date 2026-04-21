@@ -5,6 +5,8 @@ import {Relay} from './relay'
 import {UiHelper, UrlHelper} from './helpers'
 import {requestCollectVideoCount, requestCollectYearRange} from '../../shared/collect-params'
 import {truncateError} from '../../shared/errors'
+import {loadInfluencerPool, removeInfluencersFromPool} from '../../shared/influencer-pool'
+import {sleepRandom} from '../../shared/timing'
 import {
     reportRemoteCollectProgress,
     type PrepareTkPageContextResponse,
@@ -19,6 +21,9 @@ declare const window: Window & {
 let downloadInProgress = false
 let bridgeInProgress = false
 let collectInProgress = false
+let batchCollectInProgress = false
+
+const NO_QUALIFYING_VIDEO_ERROR = '当前博主没有符合要求的视频'
 
 function initTikTokMessageHandler(): void {
     if (window.__TT_BRIDGE_HANDLER_LOADED__) return
@@ -227,12 +232,78 @@ async function collectProfile(): Promise<void> {
     }
 }
 
+async function batchCollectFromPool(): Promise<void> {
+    if (batchCollectInProgress || collectInProgress) return
+
+    const influencers = await loadInfluencerPool('tiktok')
+    if (influencers.length === 0) {
+        UiHelper.log('池子中没有 TikTok 博主')
+        return
+    }
+
+    const maxVideoCount = requestCollectVideoCount()
+    if (maxVideoCount === null) return
+    const yearRange = requestCollectYearRange()
+    if (yearRange === null) return
+
+    batchCollectInProgress = true
+    await UiHelper.setBatchCollecting(true)
+    try {
+        UiHelper.log(`开始批量采集 ${influencers.length} 个博主，年份=${yearRange.label}`)
+        const succeededChannelIds: string[] = []
+        const noVideoChannelIds: string[] = []
+
+        for (let index = 0; index < influencers.length; index += 1) {
+            const influencer = influencers[index]
+            const progress = `[${index + 1}/${influencers.length}]`
+            const displayName = influencer.name || `@${influencer.username}`
+
+            try {
+                UiHelper.log(`${progress} 开始采集 ${influencer.genderTag}${displayName}...`)
+                const result = await Collector.collectProfileByUsername(
+                    influencer.username,
+                    maxVideoCount,
+                    yearRange.startYear,
+                    yearRange.endYear,
+                    (selectedCount, targetCount) => UiHelper.log(`${progress} 入选 ${selectedCount}/${targetCount}`),
+                    (downloadedCount, selectedCount) => UiHelper.log(`${progress} 下载 ${downloadedCount}/${selectedCount}`),
+                    (videoId) => UiHelper.log(`${progress} 下载失败：${videoId}，已跳过`),
+                    influencer.genderTag,
+                    (message) => UiHelper.log(`${progress} ${message}`)
+                )
+                succeededChannelIds.push(influencer.channelId)
+                UiHelper.log(`${progress} 完成: ${result.filename} (${result.output.videos.length} 视频, 下载 ${result.downloadSummary.succeeded}/${result.downloadSummary.attempted})`)
+            } catch (error) {
+                const msg = Collector.formatError(error)
+                UiHelper.log(`${progress} 采集失败: ${msg}`)
+                if (msg === NO_QUALIFYING_VIDEO_ERROR) {
+                    noVideoChannelIds.push(influencer.channelId)
+                }
+            }
+
+            if (index < influencers.length - 1) {
+                UiHelper.log('等待中...')
+                await sleepRandom(5000, 8000)
+            }
+        }
+
+        const toRemove = [...succeededChannelIds, ...noVideoChannelIds]
+        const removeResult = await removeInfluencersFromPool('tiktok', toRemove)
+        UiHelper.log(`批量采集结束：移除 ${removeResult.removed} 人（成功 ${succeededChannelIds.length}，无视频 ${noVideoChannelIds.length}），池子剩余 ${removeResult.total} 人`)
+    } catch (error) {
+        UiHelper.log(`批量采集异常: ${truncateError(error instanceof Error ? error.message : String(error), 300)}`)
+    } finally {
+        batchCollectInProgress = false
+        await UiHelper.setBatchCollecting(false)
+    }
+}
+
 export function setup(): void {
     initTikTokMessageHandler()
-    // 初始化UI
     void UiHelper.inject({
         onDownload: downloadVideo,
         onBridge: bridgeToInstagram,
-        onCollect: collectProfile
+        onCollect: collectProfile,
+        onBatchCollect: batchCollectFromPool
     })
 }

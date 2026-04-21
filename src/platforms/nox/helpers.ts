@@ -1,6 +1,7 @@
 import {FixedOverlay} from '../../shared/ui-overlay'
 import {getSelectedCount} from './scraper'
-import {getNoxInfluencerPoolCount} from './state'
+import {getInfluencerPoolCount} from './state'
+import type {InfluencerPlatform} from './types'
 
 export class UiHelper {
     private static overlay: FixedOverlay | null = null
@@ -9,7 +10,12 @@ export class UiHelper {
     private static audienceCollecting = false
     private static tkCollecting = false
 
-    public static async inject(handlers: {onCollectAudience: () => Promise<void>; onCollectTikTok: () => Promise<void>}): Promise<void> {
+    public static async inject(handlers: {
+        onCollectAudience: () => Promise<void>
+        onCollectTikTok: () => Promise<void>
+        onExportPool: () => Promise<void>
+        onClearPool: () => Promise<void>
+    }): Promise<void> {
         if (!UiHelper.overlay) {
             UiHelper.overlay = new FixedOverlay()
         }
@@ -25,6 +31,16 @@ export class UiHelper {
         UiHelper.overlay.addButton('TK采集', '#111111', async (event) => {
             event.stopPropagation()
             await handlers.onCollectTikTok()
+        }, false)
+
+        UiHelper.overlay.addButton('导出博主', '#0ea5e9', async (event) => {
+            event.stopPropagation()
+            await handlers.onExportPool()
+        }, false)
+
+        UiHelper.overlay.addButton('清空池子', '#ef4444', async (event) => {
+            event.stopPropagation()
+            await handlers.onClearPool()
         }, false)
 
         if (UiHelper.urlCleanup) {
@@ -47,19 +63,28 @@ export class UiHelper {
     private static async refreshEnabledState(): Promise<void> {
         if (!UiHelper.overlay) return
 
+        const platform = UrlHelper.getSearchPlatform()
         const isSearchPage = UrlHelper.isSearchPage()
         const selectedCount = isSearchPage ? getSelectedCount() : 0
-        const poolCount = await getNoxInfluencerPoolCount()
+        const poolCount = platform ? await getInfluencerPoolCount(platform) : 0
         const busy = UiHelper.audienceCollecting || UiHelper.tkCollecting
 
-        UiHelper.overlay.setStatus('nox', `NoxInfluencer · 待TK ${poolCount} 人`)
-        UiHelper.overlay.setButtonVisible(0, isSearchPage)
-        UiHelper.overlay.setButtonEnabled(0, isSearchPage && selectedCount > 0 && !busy)
-        UiHelper.overlay.setButtonText(0, UiHelper.audienceCollecting ? '采集画像中...' : (isSearchPage && selectedCount <= 0 ? '采集画像 (请选中博主)' : `采集画像 (${selectedCount})`))
+        UiHelper.overlay.setStatus('nox', `${UrlHelper.getStatusLabel()} · 池子 ${poolCount} 人`)
 
-        UiHelper.overlay.setButtonVisible(1, true)
-        UiHelper.overlay.setButtonEnabled(1, poolCount > 0 && !busy)
-        UiHelper.overlay.setButtonText(1, UiHelper.tkCollecting ? 'TK采集中...' : `TK采集 (待采集 ${poolCount} 人)`)
+        UiHelper.overlay.setButtonVisible('采集画像', isSearchPage)
+        UiHelper.overlay.setButtonEnabled('采集画像', isSearchPage && selectedCount > 0 && !busy)
+        UiHelper.overlay.setButtonText('采集画像', UiHelper.audienceCollecting ? '采集画像中...' : (isSearchPage && selectedCount <= 0 ? '采集画像 (请选中博主)' : `采集画像 (${selectedCount})`))
+
+        const isTikTokSearchPage = platform === 'tiktok'
+        UiHelper.overlay.setButtonVisible('TK采集', isTikTokSearchPage)
+        UiHelper.overlay.setButtonEnabled('TK采集', isTikTokSearchPage && poolCount > 0 && !busy)
+        UiHelper.overlay.setButtonText('TK采集', UiHelper.tkCollecting ? 'TK采集中...' : `TK采集 (${poolCount})`)
+
+        UiHelper.overlay.setButtonVisible('导出博主', true)
+        UiHelper.overlay.setButtonEnabled('导出博主', poolCount > 0 && !busy)
+
+        UiHelper.overlay.setButtonVisible('清空池子', true)
+        UiHelper.overlay.setButtonEnabled('清空池子', poolCount > 0 && !busy)
     }
 
     public static async setBusyState(next: {audienceCollecting?: boolean; tkCollecting?: boolean}): Promise<void> {
@@ -83,6 +108,20 @@ export class UiHelper {
 
 export class UrlHelper {
     static isSearchPage(): boolean {
-        return window.location.pathname.startsWith('/search/tiktok/channel')
+        return UrlHelper.getSearchPlatform() !== null
+    }
+
+    static getSearchPlatform(): InfluencerPlatform | null {
+        const path = window.location.pathname
+        if (path.startsWith('/search/tiktok/channel')) return 'tiktok'
+        if (path.startsWith('/search/instagram/channel')) return 'instagram'
+        return null
+    }
+
+    static getStatusLabel(): string {
+        const platform = UrlHelper.getSearchPlatform()
+        if (platform === 'instagram') return 'Nox (IG)'
+        if (platform === 'tiktok') return 'Nox (TK)'
+        return 'Nox'
     }
 }

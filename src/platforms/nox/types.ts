@@ -1,6 +1,9 @@
+export type InfluencerPlatform = 'tiktok' | 'instagram'
+
 export interface NoxInfluencer {
     channelId: string
-    tiktokUsername: string
+    platform: InfluencerPlatform
+    username: string
     name: string
     genderTag: string
     femaleRatio: number

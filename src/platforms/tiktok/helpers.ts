@@ -1,26 +1,25 @@
 import {FixedOverlay} from '../../shared/ui-overlay';
+import {getInfluencerPoolCount} from '../../shared/influencer-pool';
 
 export class UiHelper {
     private static overlay: FixedOverlay | null = null;
     private static urlCleanup: (() => void) | null = null;
+    private static poolTimer: number | null = null;
+    private static batchCollecting = false;
 
     public static async inject(handlers: {
         onBridge: () => Promise<void>
         onDownload: () => Promise<void>
         onCollect: () => Promise<void>
+        onBatchCollect: () => Promise<void>
     }) {
-        // Ensure we have a single overlay instance
         if (!UiHelper.overlay) {
             UiHelper.overlay = new FixedOverlay();
         }
 
-        // Always call inject to ensure the overlay is in place
         await UiHelper.overlay.inject('tiktok');
-
-        // Set status to TikTok style
         UiHelper.overlay.setStatus('tiktok', 'TikTok (Non-Video)');
 
-        // Add/update buttons (initially disabled)
         UiHelper.overlay.addButton('转发', '#405DE6', async (e) => {
             e.stopPropagation();
             await handlers.onBridge();
@@ -36,16 +35,25 @@ export class UiHelper {
             await handlers.onCollect();
         }, false);
 
-        // Register URL monitoring
+        UiHelper.overlay.addButton('批量采集', '#ff6b35', async (e) => {
+            e.stopPropagation();
+            await handlers.onBatchCollect();
+        }, false);
+
         if (UiHelper.urlCleanup) {
             UiHelper.urlCleanup();
         }
-
         UiHelper.urlCleanup = UiHelper.overlay.observeUrl(async () => {
             await UiHelper.refreshEnabledState();
         });
 
-        // Refresh enabled state
+        if (UiHelper.poolTimer !== null) {
+            window.clearInterval(UiHelper.poolTimer);
+        }
+        UiHelper.poolTimer = window.setInterval(() => {
+            void UiHelper.refreshEnabledState();
+        }, 2000);
+
         await UiHelper.refreshEnabledState();
     }
 
@@ -54,23 +62,30 @@ export class UiHelper {
 
         const isVideo = VideoHelper.isVideoPage();
         const isProfile = UrlHelper.isProfilePage();
+        const poolCount = isProfile ? await getInfluencerPoolCount('tiktok') : 0;
 
-        // Set status text based on page type
         if (isVideo) {
             UiHelper.overlay.setStatus('tiktok', 'TikTok (Video)');
         } else if (isProfile) {
-            UiHelper.overlay.setStatus('tiktok', 'TikTok (Profile)');
+            UiHelper.overlay.setStatus('tiktok', `TikTok (Profile) · 池子 ${poolCount}`);
         } else {
             UiHelper.overlay.setStatus('tiktok', 'TikTok (Non-Video)');
         }
 
-        // Enable/disable buttons based on page type
         UiHelper.overlay.setButtonVisible('转发', isVideo);
-        UiHelper.overlay.setButtonEnabled('转发', isVideo);
+        UiHelper.overlay.setButtonEnabled('转发', isVideo && !UiHelper.batchCollecting);
         UiHelper.overlay.setButtonVisible('下载', isVideo);
-        UiHelper.overlay.setButtonEnabled('下载', isVideo);
+        UiHelper.overlay.setButtonEnabled('下载', isVideo && !UiHelper.batchCollecting);
         UiHelper.overlay.setButtonVisible('采集', isProfile);
-        UiHelper.overlay.setButtonEnabled('采集', isProfile);
+        UiHelper.overlay.setButtonEnabled('采集', isProfile && !UiHelper.batchCollecting);
+        UiHelper.overlay.setButtonVisible('批量采集', isProfile);
+        UiHelper.overlay.setButtonEnabled('批量采集', isProfile && poolCount > 0 && !UiHelper.batchCollecting);
+        UiHelper.overlay.setButtonText('批量采集', UiHelper.batchCollecting ? '批量采集中...' : `批量采集 (${poolCount})`);
+    }
+
+    public static async setBatchCollecting(value: boolean) {
+        UiHelper.batchCollecting = value;
+        await UiHelper.refreshEnabledState();
     }
 
     public static log(message: unknown) {

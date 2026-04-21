@@ -349,8 +349,8 @@ export class FixedOverlay {
         this.syncEnabledAttribute();
     }
 
-    public setButtonText(indexOrText: number | string, text: string) {
-        let target: { element: HTMLButtonElement; config: OverlayButton } | undefined;
+     public setButtonText(indexOrText: number | string, text: string) {
+         let target: { element: HTMLButtonElement; config: OverlayButton } | undefined;
 
         if (typeof indexOrText === 'number') {
             target = this.buttons[indexOrText];
@@ -358,11 +358,10 @@ export class FixedOverlay {
             target = this.buttons.find(b => b.config.text === indexOrText);
         }
 
-        if (target) {
-            target.element.textContent = text;
-            target.config.text = text;
-        }
-    }
+         if (target) {
+             target.element.textContent = text;
+         }
+     }
 
     public setButtonEnabled(indexOrText: number | string, enabled: boolean) {
         let target: { element: HTMLButtonElement; config: OverlayButton } | undefined;
