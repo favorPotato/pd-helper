@@ -232,14 +232,14 @@ async function collectFromTikTokPool(): Promise<void> {
             status: 'unused',
             limit: batchSize
         })
-        influencers = resp.items || []
+        influencers = (resp.items || []).filter(inf => inf.genderTag)
     } catch (e) {
         UiHelper.log(`从 Sheets 拉取失败: ${truncateError(e, 200)}`)
         return
     }
 
     if (influencers.length === 0) {
-        UiHelper.log('Sheets 中没有未采博主')
+        UiHelper.log('Sheets 中没有未采博主（或画像未回填）')
         return
     }
 

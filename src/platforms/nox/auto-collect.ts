@@ -62,43 +62,72 @@ async function runPagingPhase(
         return {ok: true, newInfluencers}
     }
 
+    const collectProfile = cp.params.collectProfile
+    let profilingSucceeded = 0
+    let profilingFailed = 0
+    let profilingSessionError = false
+
     const result = await paginate(
         {
             targetCount: remainingCount,
             baseParams: cp.params.baseParams,
             startPageNum: cp.paging.nextPageNum,
             existingIds,
+            onPageCollected: async (pageInfluencers) => {
+                for (const inf of pageInfluencers) {
+                    newInfluencers.push(inf)
+                    searchData[inf.id] = extractSearchExtra(inf)
+                }
+
+                const now = new Date().toISOString()
+                const sheetsItems = pageInfluencers.map(inf => ({
+                    channelId: inf.id,
+                    username: inf.alias,
+                    name: inf.nickName,
+                    country: inf.country,
+                    status: 'unused',
+                    followers: inf.followers,
+                    totalVideos: inf.totalVideos,
+                    noxScore: inf.noxScore,
+                    createdAt: now,
+                    updatedAt: now,
+                }))
+                await enqueueUpsertInfluencers('tiktok', sheetsItems)
+
+                await patchCheckpoint({
+                    paging: {
+                        ...cp.paging,
+                        pagedCount: cp.paging.pagedCount + newInfluencers.length,
+                        newChannelIds: [...cp.paging.newChannelIds, ...newInfluencers.map(i => i.id)],
+                        searchData,
+                    }
+                })
+
+                if (collectProfile && !profilingSessionError) {
+                    const pageChannelIds = pageInfluencers.map(inf => inf.id)
+                    const profilingResult = await runProfilingLoop({
+                        channelIds: pageChannelIds,
+                        cursor: 0,
+                        succeededCount: 0,
+                        failedCount: 0,
+                        searchData,
+                    }, onStatus, {
+                        waitBeforeItem: waitIfPaused,
+                        onSessionError: async () => {
+                            profilingSessionError = true
+                            await pauseLongTask()
+                        },
+                    })
+                    profilingSucceeded += profilingResult.succeededCount
+                    profilingFailed += profilingResult.failedCount
+                }
+            },
         },
         async (msg) => {
             onStatus(msg)
             await waitIfPaused(onStatus)
         }
     )
-
-    for (const inf of result.influencers) {
-        if (existingIds.has(inf.id)) continue
-        existingIds.add(inf.id)
-        newInfluencers.push(inf)
-        searchData[inf.id] = extractSearchExtra(inf)
-    }
-
-    const now = new Date().toISOString()
-    const sheetsItems = newInfluencers.map(inf => ({
-        channelId: inf.id,
-        username: inf.alias,
-        name: inf.nickName,
-        country: inf.country,
-        status: 'unused',
-        followers: inf.followers,
-        totalVideos: inf.totalVideos,
-        noxScore: inf.noxScore,
-        createdAt: now,
-        updatedAt: now,
-    }))
-
-    if (sheetsItems.length > 0) {
-        await enqueueUpsertInfluencers('tiktok', sheetsItems)
-    }
 
     await patchCheckpoint({
         paging: {
@@ -108,7 +137,15 @@ async function runPagingPhase(
             pagedCount: cp.paging.pagedCount + newInfluencers.length,
             newChannelIds: [...cp.paging.newChannelIds, ...newInfluencers.map(i => i.id)],
             searchData,
-        }
+        },
+        ...(collectProfile ? {
+            profiling: {
+                status: profilingSessionError ? 'running' : 'done',
+                cursor: profilingSucceeded + profilingFailed,
+                succeededCount: cp.profiling.succeededCount + profilingSucceeded,
+                failedCount: cp.profiling.failedCount + profilingFailed,
+            }
+        } : {}),
     })
 
     if (result.stopped === 'session_expired') {
@@ -271,23 +308,15 @@ export async function startAutoCollect(params: NoxAutoCollectParams, onStatus: (
         cp = await getCheckpoint()
         if (!cp || cp.state !== 'running') return
 
-        if (!params.collectProfile) {
-            await patchCheckpoint({state: 'done', profiling: {...cp.profiling, status: 'skipped'}})
-            onStatus(`翻页完成，共 ${newInfluencers.length} 个博主（未采画像）`)
-            showAlarm('Nox 自动采集完成！', 10_000)
-            return
-        }
-
-        const allChannelIds = cp.paging.newChannelIds
-        onStatus(`翻页完成，开始采 ${allChannelIds.length} 个画像...`)
-        await runProfilingPhase(cp, allChannelIds, onStatus)
-
-        cp = await getCheckpoint()
-        if (cp?.state === 'running') {
-            await patchCheckpoint({state: 'done'})
-            onStatus('全部完成！')
-            showAlarm('Nox 自动采集完成！', 10_000)
-        }
+        await patchCheckpoint({
+            state: 'done',
+            profiling: {
+                ...cp.profiling,
+                status: params.collectProfile ? 'done' : 'skipped',
+            }
+        })
+        onStatus(`全部完成！共 ${newInfluencers.length} 个博主${params.collectProfile ? '（含画像）' : ''}`)
+        showAlarm('Nox 自动采集完成！', 10_000)
     } finally {
         mainLoopRunning = false
     }

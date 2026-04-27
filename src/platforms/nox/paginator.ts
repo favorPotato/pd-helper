@@ -7,6 +7,7 @@ export interface PaginateOptions {
     baseParams: Record<string, unknown>
     startPageNum?: number
     existingIds?: Set<string>
+    onPageCollected?: (influencers: SearchInfluencer[]) => Promise<void>
 }
 
 export interface PaginateResult {
@@ -39,11 +40,17 @@ export async function paginate(
             totalSize = page.totalSize
             consecutiveErrors = 0
 
+            const pageNew: SearchInfluencer[] = []
             for (const inf of page.influencers) {
                 if (seenIds.has(inf.id)) continue
                 seenIds.add(inf.id)
                 collected.push(inf)
+                pageNew.push(inf)
                 if (collected.length >= targetCount) break
+            }
+
+            if (pageNew.length > 0 && opts.onPageCollected) {
+                await opts.onPageCollected(pageNew)
             }
 
             pageNum += 1
