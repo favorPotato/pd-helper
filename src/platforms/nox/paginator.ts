@@ -28,17 +28,23 @@ export async function paginate(
     const seenIds = new Set<string>(opts.existingIds || [])
     const collected: SearchInfluencer[] = []
     let pageNum = startPageNum
-    let totalPages = 999
+    const pageSize = Number(baseParams.pageSize) || 100
+    let totalPages = Math.max(startPageNum, Math.ceil(targetCount / pageSize))
     let totalSize = 0
     let consecutiveErrors = 0
 
     while (collected.length < targetCount && pageNum <= totalPages) {
         try {
-            onProgress(`翻页 ${pageNum}/${totalPages === 999 ? '?' : totalPages} · 已收 ${collected.length}/${targetCount}`)
+            onProgress(`翻页 ${pageNum}/${totalPages} · 已收 ${collected.length}/${targetCount}`)
             const page = await fetchSearchPage(baseParams, pageNum)
-            totalPages = page.totalPage
+            if (page.totalPage > 0) totalPages = page.totalPage
             totalSize = page.totalSize
             consecutiveErrors = 0
+
+            if (page.influencers.length === 0) {
+                if (opts.onPageCollected) await opts.onPageCollected([], pageNum)
+                return {influencers: collected, totalPages, totalSize, nextPageNum: pageNum, stopped: 'no_more_pages'}
+            }
 
             const pageNew: SearchInfluencer[] = []
             for (const inf of page.influencers) {

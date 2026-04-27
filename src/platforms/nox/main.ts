@@ -418,14 +418,14 @@ async function backfillMissingProfiles(): Promise<void> {
     const params = await showDialog({
         title: '回填画像',
         fields: [
-            {key: 'batchSize', label: '回填博主数', type: 'number', value: 100, min: 1, max: 1000},
+            {key: 'batchSize', label: '回填博主数', type: 'number', value: 100, min: 1},
             {key: 'info', label: '按性别标签为空筛选，并重跑 audience 画像', type: 'info'}
         ],
         confirmText: '开始'
     })
     if (!params) return
 
-    const batchSize = Math.min(Number(params.batchSize) || 100, 1000)
+    const batchSize = Number(params.batchSize) || 100
 
     let influencers: NoxInfluencer[]
     try {

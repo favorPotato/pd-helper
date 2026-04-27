@@ -107,7 +107,7 @@ export async function fetchSearchPage(
 
     return {
         totalSize: Number(data.totalSize) || 0,
-        totalPage: Number(data.totalPage) || 1,
+        totalPage: Number(data.totalPage) || 0,
         pageNum: Number(data.pageNum) || pageNum,
         pageSize: Number(data.pageSize) || 100,
         influencers,

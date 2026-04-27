@@ -129,6 +129,7 @@ function upsertInfluencers_(payload) {
   var lastRow = sheet.getLastRow();
   var allRows = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues() : [];
   var existingIds = {};
+  var colCount = sheet.getLastColumn();
 
   for (var r = 0; r < allRows.length; r++) {
     if (allRows[r][channelIdCol]) existingIds[String(allRows[r][channelIdCol])] = r + 2;
@@ -136,6 +137,7 @@ function upsertInfluencers_(payload) {
 
   var added = 0;
   var skipped = 0;
+  var newRows = [];
   for (var i = 0; i < influencers.length; i++) {
     var inf = influencers[i];
     var cid = String(inf.channelId || '');
@@ -152,15 +154,19 @@ function upsertInfluencers_(payload) {
       continue;
     }
 
-    var newRow = new Array(sheet.getLastColumn()).fill('');
+    var newRow = new Array(colCount).fill('');
     newRow = applyInfluencerPatchToRow_(newRow, inf, headerMap);
     if (!newRow[headerMap['入库时间']]) newRow[headerMap['入库时间']] = new Date().toISOString();
     newRow[headerMap['更新时间']] = new Date().toISOString();
     if (!newRow[headerMap['状态']]) newRow[headerMap['状态']] = 'unused';
-    sheet.appendRow(newRow);
-    existingIds[cid] = sheet.getLastRow();
+    newRows.push(newRow);
+    existingIds[cid] = lastRow + newRows.length;
     allRows.push(newRow);
     added++;
+  }
+
+  if (newRows.length > 0) {
+    sheet.getRange(lastRow + 1, 1, newRows.length, colCount).setValues(newRows);
   }
 
   return { ok: true, added: added, skipped: skipped };
@@ -190,7 +196,8 @@ function loadInfluencersByField_(payload) {
   var field = String(payload.field || '').trim();
   var operator = String(payload.operator || 'eq').trim();
   var value = payload.value;
-  var limit = payload.limit || 200;
+  var limit = payload.limit === undefined ? 200 : Number(payload.limit);
+  var hasLimit = limit > 0;
   var fieldIdx = INFLUENCER_KEYS.indexOf(field);
   if (fieldIdx === -1) return { ok: false, error: 'invalid field' };
 
@@ -220,6 +227,8 @@ function loadInfluencersByField_(payload) {
 
     if (operator === 'empty') {
       matched = !cellStr;
+    } else if (operator === 'notEmpty') {
+      matched = !!cellStr;
     } else if (operator === 'in') {
       matched = inValues.indexOf(cellStr) !== -1;
     } else {
@@ -228,7 +237,7 @@ function loadInfluencersByField_(payload) {
 
     if (!matched) continue;
     items.push(buildInfluencerItemFromRow_(allRows[r], headerMap));
-    if (items.length >= limit) break;
+    if (hasLimit && items.length >= limit) break;
   }
 
   return { ok: true, items: items };

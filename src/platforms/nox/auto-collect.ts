@@ -1,5 +1,6 @@
 import {sleepRandom} from '../../shared/timing'
 import {isSessionError, showAlarm} from '../../shared/alarm'
+import {callAppsScript} from '../../shared/apps-script-client'
 import {enqueueUpsertInfluencers, enqueueUpdateStatus, enqueueUpsertNoxPage, getSyncStatus, HARD_WATERMARK} from '../../shared/sheets-sync'
 import {
     getCheckpoint,
@@ -14,8 +15,26 @@ import {paginate} from './paginator'
 import {fetchAudienceProfile} from './client'
 import {buildExtraDataFromProfile, classifyGender, extractSearchExtra, type SearchExtra} from './profile-mapping'
 import {getSearchUrlWithoutPageNum, type SearchInfluencer} from './search-api'
+import type {NoxInfluencer} from './types'
 
 let mainLoopRunning = false
+
+async function loadProfiledChannelIds(onStatus: (msg: string) => void): Promise<Set<string>> {
+    try {
+        const resp = await callAppsScript<{ok: boolean; items: NoxInfluencer[]}>('loadInfluencersByField', {
+            platform: 'tiktok',
+            field: 'genderTag',
+            operator: 'notEmpty',
+            limit: 0,
+        })
+        const ids = new Set((resp.items || []).map(item => String(item.channelId || '')).filter(Boolean))
+        onStatus(`已加载 ${ids.size} 个已回填画像博主，自动跳过`)
+        return ids
+    } catch (error) {
+        onStatus(`加载已回填画像集合失败，将不跳过已回填项: ${error instanceof Error ? error.message : String(error)}`)
+        return new Set()
+    }
+}
 
 interface ProfilingRunContext {
     channelIds: string[]
@@ -23,6 +42,7 @@ interface ProfilingRunContext {
     succeededCount: number
     failedCount: number
     searchData: Record<string, SearchExtra>
+    profiledIds?: Set<string>
 }
 
 interface ProfilingRunHooks {
@@ -44,7 +64,8 @@ async function waitIfPaused(onStatus: (msg: string) => void): Promise<boolean> {
 
 async function runPagingPhase(
     cp: LongTaskCheckpoint,
-    onStatus: (msg: string) => void
+    onStatus: (msg: string) => void,
+    profiledIds?: Set<string>
 ): Promise<{ok: boolean; newInfluencers: SearchInfluencer[]}> {
     const newInfluencers: SearchInfluencer[] = []
     const existingIds = new Set<string>(cp.paging.newChannelIds)
@@ -116,6 +137,7 @@ async function runPagingPhase(
                         succeededCount: 0,
                         failedCount: 0,
                         searchData,
+                        profiledIds,
                     }, onStatus, {
                         waitBeforeItem: waitIfPaused,
                         onSessionError: async () => {
@@ -170,7 +192,7 @@ async function runProfilingLoop(
     let cursor = context.cursor
     let succeededCount = context.succeededCount
     let failedCount = context.failedCount
-    const {channelIds, searchData} = context
+    const {channelIds, searchData, profiledIds} = context
 
     for (let i = cursor; i < channelIds.length; i += 1) {
         if (hooks.waitBeforeItem) {
@@ -187,6 +209,12 @@ async function runProfilingLoop(
         }
 
         const channelId = channelIds[i]
+        if (profiledIds?.has(channelId)) {
+            cursor = i + 1
+            onStatus(`画像 ${i + 1}/${channelIds.length} 已回填，跳过`)
+            await hooks.onProgressPersist?.({cursor, succeededCount, failedCount})
+            continue
+        }
         onStatus(`画像 ${i + 1}/${channelIds.length}`)
 
         try {
@@ -195,6 +223,7 @@ async function runProfilingLoop(
             const extraData = buildExtraDataFromProfile(profile, searchData[channelId] || {})
             cursor = i + 1
             succeededCount += 1
+            profiledIds?.add(channelId)
 
             await enqueueUpdateStatus('tiktok', channelId, {
                 genderTag,
@@ -306,8 +335,9 @@ export async function startAutoCollect(params: NoxAutoCollectParams, onStatus: (
         let cp = await getCheckpoint()
         if (!cp) return
 
+        const profiledIds = params.collectProfile ? await loadProfiledChannelIds(onStatus) : undefined
         onStatus('翻页采集开始...')
-        const {ok, newInfluencers} = await runPagingPhase(cp, onStatus)
+        const {ok, newInfluencers} = await runPagingPhase(cp, onStatus, profiledIds)
         if (!ok) return
 
         cp = await getCheckpoint()
@@ -338,7 +368,8 @@ export async function resumeAutoCollect(onStatus: (msg: string) => void): Promis
 
         if (cp.paging.status !== 'done') {
             onStatus('恢复翻页采集...')
-            const {ok} = await runPagingPhase(cp, onStatus)
+            const profiledIds = cp.params.collectProfile ? await loadProfiledChannelIds(onStatus) : undefined
+            const {ok} = await runPagingPhase(cp, onStatus, profiledIds)
             if (!ok) return
             cp = await getCheckpoint()
             if (!cp || cp.state !== 'running') return
