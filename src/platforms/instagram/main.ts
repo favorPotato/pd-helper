@@ -342,15 +342,23 @@ async function runCollectReelsWorkflow(order: 'asc' | 'desc' = 'asc') {
 
     reelsCollectionInProgress = true
     try {
-        const rangeInput = window.prompt('1-10 = 按时间线取第 1 到第 10 个视频\n5 = 只取第 5 个\n留空 = 全部\n输入采集区间值：', '')
-        if (rangeInput === null) {
+        const dialogResult = await import('../../shared/custom-dialog').then(m => m.showDialog({
+            title: '采集 Reels',
+            fields: [{
+                key: 'range',
+                label: '采集区间（如 1-10 取前10个，5 只取第5个，留空全部）',
+                type: 'text',
+                placeholder: '留空 = 全部'
+            }]
+        }))
+        if (dialogResult === null) {
             UiHelper.log('已取消 reels 采集')
             return
         }
 
+        const rangeInput = String(dialogResult.range || '')
         const range = parseReelsCollectRange(rangeInput)
         const log = (message: string) => {
-            console.log(`[采集reels] ${message}`)
             UiHelper.log(message)
         }
 

@@ -1,25 +1,17 @@
-import {zlibSync} from 'fflate'
-import type {AudienceGender, AudienceResponse} from './types'
+import {encodeP} from '../../shared/p-codec'
+import type {AudienceProfile, AudienceResponse} from './types'
 
-function bytesToBase64(bytes: Uint8Array): string {
-    let binary = ''
-    const chunkSize = 0x8000
-    for (let index = 0; index < bytes.length; index += chunkSize) {
-        const chunk = bytes.subarray(index, index + chunkSize)
-        binary += String.fromCharCode(...chunk)
+function extractName(value: unknown): string {
+    if (typeof value === 'string') return value
+    if (value && typeof value === 'object') {
+        const obj = value as Record<string, unknown>
+        if (typeof obj.name === 'string') return obj.name
     }
-    return btoa(binary)
+    return ''
 }
 
-function encodeAudienceParam(channelId: string, subSite = 'cn', t = 1021): string {
-    const json = JSON.stringify({channelId, subSite, t})
-    const urlEncoded = encodeURIComponent(json)
-    const compressed = zlibSync(new TextEncoder().encode(urlEncoded), {level: 9})
-    return bytesToBase64(compressed).replace(/=+$/, '')
-}
-
-export async function fetchAudienceGender(channelId: string): Promise<AudienceGender> {
-    const p = encodeAudienceParam(channelId)
+export async function fetchAudienceProfile(channelId: string): Promise<AudienceProfile> {
+    const p = encodeP({channelId, subSite: 'cn', t: 1021})
     const url = `https://cn.noxinfluencer.com/ws/v2/tiktok/star/audience?p=${p}`
     const response = await fetch(url, {
         credentials: 'include',
@@ -35,5 +27,16 @@ export async function fetchAudienceGender(channelId: string): Promise<AudienceGe
         throw new Error(`audience API 业务错误: ${data.errorNum}`)
     }
 
-    return data.retData.gender
+    const r = data.retData
+    return {
+        gender: r.gender,
+        regions: (r.regions as Record<string, number>) || {},
+        language: (r.language as Record<string, number>) || {},
+        maleAge: (r.maleAge as Record<string, number>) || {},
+        femaleAge: (r.femaleAge as Record<string, number>) || {},
+        adults: typeof r.adults === 'number' ? r.adults : 0,
+        topRegion: extractName(r.topRegion),
+        topGender: extractName(r.topGender),
+        topAge: extractName(r.topAge),
+    }
 }

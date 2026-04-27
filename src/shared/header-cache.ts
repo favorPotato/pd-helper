@@ -7,7 +7,7 @@
 const CACHE_KEYS = ['x-ig-www-claim', 'x-instagram-ajax', 'x-web-session-id'] as const
 const STORAGE_KEY = 'ig_bridge_header_cache_v1'
 
-export interface HeaderCache {
+interface HeaderCache {
     'x-ig-www-claim': string
     'x-instagram-ajax': string
     'x-web-session-id': string
@@ -79,7 +79,7 @@ export function getHeaderStatus(): HeaderStatus {
     }
 }
 
-export function maybeUpdateFromHeaders(requestHeaders: chrome.webRequest.HttpHeader[]): void {
+function maybeUpdateFromHeaders(requestHeaders: chrome.webRequest.HttpHeader[]): void {
     if (!Array.isArray(requestHeaders)) return
 
     let changed = false

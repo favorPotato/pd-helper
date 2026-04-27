@@ -323,10 +323,6 @@ export class RequestHelper {
         return 'Instagram 269.0.0.18.75 Android (30/11; 420dpi; 1080x1920; OnePlus; 6T Dev; devitron; qcom; zh_CN; 312456789)'
     }
 
-    static buildPostUrl(shortcode: string): string {
-        return RequestHelper.buildMediaUrl(shortcode, 'p')
-    }
-
     static buildMediaUrl(shortcode: string, routeKind: MediaRouteKind): string {
         const path = routeKind === 'reels' ? 'reels' : 'p'
         return `https://www.instagram.com/${path}/${shortcode}/`

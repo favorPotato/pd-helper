@@ -22,9 +22,9 @@ const mediaPrompt = requireText('MEDIA_PROMPT', readFileSync('src/prompts/media.
 const scriptApiBase = requireNonEmpty('SCRIPT_API_BASE', process.env.SCRIPT_API_BASE)
 const scriptApiKey = requireNonEmpty('SCRIPT_API_KEY', process.env.SCRIPT_API_KEY)
 const tiktokMinPlayCount = requireNonEmpty('TIKTOK_MIN_PLAY_COUNT', process.env.TIKTOK_MIN_PLAY_COUNT)
-const tiktokMinLikeRate = requireNonEmpty('TIKTOK_MIN_LIKE_RATE', process.env.TIKTOK_MIN_LIKE_RATE)
-const tiktokMaxVideoDuration = requireNonEmpty('TIKTOK_MAX_VIDEO_DURATION', process.env.TIKTOK_MAX_VIDEO_DURATION)
 const tiktokMinCommentCount = requireNonEmpty('TIKTOK_MIN_COMMENT_COUNT', process.env.TIKTOK_MIN_COMMENT_COUNT)
+const appsScriptUrl = process.env.APPS_SCRIPT_URL || ''
+const appsScriptToken = process.env.APPS_SCRIPT_TOKEN || ''
 
 const common = {
     bundle: true,
@@ -36,9 +36,9 @@ const common = {
         __SCRIPT_API_BASE__: JSON.stringify(scriptApiBase),
         __SCRIPT_API_KEY__: JSON.stringify(scriptApiKey),
         __TIKTOK_MIN_PLAY_COUNT__: JSON.stringify(tiktokMinPlayCount),
-        __TIKTOK_MIN_LIKE_RATE__: JSON.stringify(tiktokMinLikeRate),
-        __TIKTOK_MAX_VIDEO_DURATION__: JSON.stringify(tiktokMaxVideoDuration),
-        __TIKTOK_MIN_COMMENT_COUNT__: JSON.stringify(tiktokMinCommentCount)
+        __TIKTOK_MIN_COMMENT_COUNT__: JSON.stringify(tiktokMinCommentCount),
+        __APPS_SCRIPT_URL__: JSON.stringify(appsScriptUrl),
+        __APPS_SCRIPT_TOKEN__: JSON.stringify(appsScriptToken)
     }
 }
 

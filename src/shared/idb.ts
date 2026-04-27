@@ -1,5 +1,5 @@
-export const IDB_NAME = 'tiktok_ig_bridge_cache'
-export const IDB_STORE = 'videos'
+const IDB_NAME = 'tiktok_ig_bridge_cache'
+const IDB_STORE = 'videos'
 export const IDB_KEY = 'current'
 
 export interface VideoMeta {
@@ -31,7 +31,7 @@ export function parseVideoMeta(input: unknown): VideoMeta {
     return {width: 0, height: 0, durationSec: 0}
 }
 
-export function openIdb(): Promise<IDBDatabase> {
+function openIdb(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const req = indexedDB.open(IDB_NAME, 1)
         req.onerror = () => reject(new Error('IndexedDB open failed'))

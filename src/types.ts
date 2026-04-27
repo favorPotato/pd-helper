@@ -24,13 +24,38 @@ export interface ScriptApiResponse {
     error?: string
 }
 
+export interface AppsScriptRequestMessage {
+    type: 'apps_script_request'
+    action: string
+    payload: unknown
+}
+
+export interface AppsScriptResponse {
+    ok: boolean
+    status: number
+    data: unknown
+    error?: string
+}
+
 export interface DownloadMessage {
     action: 'download'
     url: string
     filename: string
 }
 
-export interface MediaAnalysis {
+export interface NoxSearchRequestMessage {
+    type: 'nox_search_request'
+    url: string
+}
+
+export interface NoxSearchResponse {
+    ok: boolean
+    status: number
+    data: Record<string, unknown> | null
+    error?: string
+}
+
+interface MediaAnalysis {
     description: string
     per_image_notes: string[] | null
     visual_tags: string[]

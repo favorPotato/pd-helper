@@ -1,7 +1,5 @@
 import {
-    TIKTOK_MAX_VIDEO_DURATION,
     TIKTOK_MIN_COMMENT_COUNT,
-    TIKTOK_MIN_LIKE_RATE,
     TIKTOK_MIN_PLAY_COUNT
 } from '../../shared/env'
 import {
@@ -16,11 +14,16 @@ import {truncateError} from '../../shared/errors'
 import {sleepRandom} from '../../shared/timing'
 import {Downloader, getDownloadCandidatesFromItem, type DownloadCandidate} from './downloader'
 import type {CommentPageResponse, RequestEnv} from './client'
-import {fetchCommentPage, fetchHotVideoPage, fetchHtml} from './client'
+import {fetchCommentPage, fetchVideoPage, fetchHtml} from './client'
 import type {TikTokComment, TikTokCommentSummary, TikTokProfileCollection, TikTokUser, TikTokVideo} from './types'
 import {UrlHelper} from './helpers'
 
 type AnyObject = Record<string, unknown>
+
+export interface CollectFilterOptions {
+    minLikeRate: number
+    maxDurationSec: number
+}
 
 interface DownloadSummary {
     attempted: number
@@ -32,6 +35,8 @@ interface DownloadSummary {
 interface DownloadedArchiveVideo {
     file: ArchiveFile
 }
+
+type VideoItem = AnyObject
 
 interface CollectedVideo extends TikTokVideo {
     downloadCandidates: DownloadCandidate[]
@@ -249,18 +254,18 @@ function qualifiesVideo(stats: {
     playCount: number;
     diggCount: number;
     commentCount: number
-}, videoDuration: number): boolean {
+}, videoDuration: number, filters: CollectFilterOptions): boolean {
     if (stats.playCount < TIKTOK_MIN_PLAY_COUNT) return false
     if (stats.commentCount < TIKTOK_MIN_COMMENT_COUNT) return false
-    if (videoDuration > TIKTOK_MAX_VIDEO_DURATION) return false
+    if (videoDuration > filters.maxDurationSec) return false
     if (stats.playCount <= 0) return false
-    return stats.diggCount / stats.playCount >= TIKTOK_MIN_LIKE_RATE
+    return stats.diggCount / stats.playCount >= filters.minLikeRate
 }
 
-function isVideoInYearRange(createAt: number, startYear: number, endYear: number): boolean {
+function isVideoInDateRange(createAt: number, fromTs: number, toTs: number): boolean {
     if (!Number.isFinite(createAt) || createAt <= 0) return false
-    const year = new Date(createAt * 1000).getUTCFullYear()
-    return year >= startYear && year <= endYear
+    const ms = createAt * 1000
+    return ms >= fromTs && ms <= toTs
 }
 
 function parseSortTags(value: unknown): { top_list: number } {
@@ -438,6 +443,42 @@ async function fetchCommentsForVideo(
     return mapCommentResponse(page, authorUserId)
 }
 
+function toProfileMetricItems(items: unknown[]): VideoItem[] {
+    return items
+        .map((item) => asObject(item))
+        .filter((item): item is VideoItem => item !== null && item.isAd !== true)
+}
+
+function computeQualifyingRate(items: VideoItem[], filters: CollectFilterOptions): number {
+    if (items.length === 0) return 0
+
+    let qualifying = 0
+    for (const item of items) {
+        const stats = extractStats(item)
+        if (stats.playCount < TIKTOK_MIN_PLAY_COUNT) continue
+        if (stats.commentCount < TIKTOK_MIN_COMMENT_COUNT) continue
+        if (extractVideoDuration(item) > filters.maxDurationSec) continue
+        if (stats.playCount <= 0) continue
+        if (stats.diggCount / stats.playCount < filters.minLikeRate) continue
+        qualifying += 1
+    }
+
+    return +(qualifying / items.length).toFixed(3)
+}
+
+function computePostRate(items: VideoItem[]): number {
+    if (items.length === 0) return 0
+
+    const now = Date.now() / 1000
+    const thirtyDaysAgo = now - 30 * 86400
+    let recentCount = 0
+    for (const item of items) {
+        const createTime = toNumber(item.createTime)
+        if (createTime >= thirtyDaysAgo) recentCount += 1
+    }
+    return recentCount
+}
+
 async function collectVideos(
     username: string,
     authorUserId: string,
@@ -445,10 +486,11 @@ async function collectVideos(
     requestEnv: RequestEnv,
     profileUrl: string,
     maxVideoCount: number,
-    startYear: number,
-    endYear: number,
+    fromTs: number,
+    toTs: number,
+    filters: CollectFilterOptions,
     onLog?: CollectLogFn
-): Promise<CollectedVideo[]> {
+): Promise<{ videos: CollectedVideo[] }> {
     const videos: CollectedVideo[] = []
     const seenVideoIds = new Set<string>()
     let cursor = 0
@@ -457,7 +499,7 @@ async function collectVideos(
     while (videos.length < maxVideoCount) {
         page += 1
         await emitCollectLog(onLog, `拉取视频列表第 ${page} 页...`)
-        const pageResult = await fetchHotVideoPage(secUid, cursor, requestEnv, profileUrl)
+        const pageResult = await fetchVideoPage(secUid, cursor, requestEnv, profileUrl)
         const items = pageResult.items
         if (items.length === 0) break
 
@@ -471,11 +513,11 @@ async function collectVideos(
             if (seenVideoIds.has(videoId)) continue
 
             const createAt = toNumber(obj.createTime)
-            if (!isVideoInYearRange(createAt, startYear, endYear)) continue
+            if (!isVideoInDateRange(createAt, fromTs, toTs)) continue
 
             const stats = extractStats(obj)
             const videoDuration = extractVideoDuration(obj)
-            if (!qualifiesVideo(stats, videoDuration)) continue
+            if (!qualifiesVideo(stats, videoDuration, filters)) continue
             const downloadCandidates = getDownloadCandidatesFromItem(obj)
             if (downloadCandidates.length === 0) continue
             seenVideoIds.add(videoId)
@@ -533,7 +575,9 @@ async function collectVideos(
         await sleepRandom(1200, 2000)
     }
 
-    return videos
+    return {
+        videos
+    }
 }
 
 async function downloadCollectedVideos(
@@ -574,12 +618,27 @@ async function downloadCollectedVideos(
     return {downloadSummary, downloadedFiles}
 }
 
+async function resolveProfile(username: string, onLog?: CollectLogFn) {
+    const normalizedUsername = username.trim().replace(/^@/, '')
+    if (!normalizedUsername) {
+        throw new Error('缺少 TikTok 用户名')
+    }
+    await emitCollectLog(onLog, `读取主页信息: @${normalizedUsername}`)
+    const ctx = await loadProfileContext(normalizedUsername)
+    await emitCollectLog(onLog, `主页信息就绪: @${ctx.username}`)
+    if (ctx.commentSetting !== 0) {
+        throw new Error('当前博主已关闭评论功能')
+    }
+    return ctx
+}
+
 export class Collector {
     static async collectProfileByUsername(
         username: string,
         maxVideoCount: number,
-        startYear: number,
-        endYear: number,
+        fromTs: number,
+        toTs: number,
+        filters: CollectFilterOptions,
         onSelectedCount?: (selectedCount: number, targetCount: number) => void,
         onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
         onDownloadFailed?: (videoId: string) => void,
@@ -590,29 +649,21 @@ export class Collector {
         output: TikTokProfileCollection
         downloadSummary: DownloadSummary
     }> {
-        const normalizedUsername = username.trim().replace(/^@/, '')
-        if (!normalizedUsername) {
-            throw new Error('缺少 TikTok 用户名')
-        }
+        const {user, requestEnv, username: resolvedUsername, profileUrl} = await resolveProfile(username, onLog)
 
-        await emitCollectLog(onLog, `读取主页信息: @${normalizedUsername}`)
-        const {user, requestEnv, username: resolvedUsername, commentSetting, profileUrl} = await loadProfileContext(normalizedUsername)
-        await emitCollectLog(onLog, `主页信息就绪: @${resolvedUsername}`)
-
-        if (commentSetting !== 0) {
-            throw new Error('当前博主已关闭评论功能')
-        }
-
-        await emitCollectLog(onLog, `开始筛选 ${startYear}-${endYear} 年视频...`)
-        const videos = await collectVideos(
+        const fromDate = new Date(fromTs).toISOString().slice(0, 10)
+        const toDate = new Date(toTs).toISOString().slice(0, 10)
+        await emitCollectLog(onLog, `开始筛选 ${fromDate} ~ ${toDate} 视频...`)
+        const {videos} = await collectVideos(
             resolvedUsername,
             user.userId,
             user.secUid,
             requestEnv,
             profileUrl,
             maxVideoCount,
-            startYear,
-            endYear,
+            fromTs,
+            toTs,
+            filters,
             onLog
         )
         if (videos.length === 0) {
@@ -634,20 +685,40 @@ export class Collector {
         const baseName = `${prefix}${resolvedUsername}_${formatTimestampForFilename(new Date())}`
         const jsonFilename = `${baseName}.json`
         const filename = `${baseName}.zip`
-        console.log('[TikTok Collect]', output)
         const archiveBlob = createZipBlob([
             createJsonArchiveFile(jsonFilename, output),
             ...downloadedFiles
         ])
         await downloadBlob(filename, archiveBlob)
         await emitCollectLog(onLog, `归档已生成: ${filename}`)
-        return {filename, output, downloadSummary}
+        return {
+            filename,
+            output,
+            downloadSummary,
+        }
+    }
+
+    static async computeProfileMetricsByUsername(
+        username: string,
+        filters: CollectFilterOptions,
+        onLog?: CollectLogFn
+    ): Promise<{ qualifyingRate: number; postRate: number }> {
+        const {user, requestEnv, profileUrl} = await resolveProfile(username, onLog)
+
+        await emitCollectLog(onLog, '拉取视频列表第 1 页...')
+        const hotPage = await fetchVideoPage(user.secUid, 0, requestEnv, profileUrl)
+        const recentPage = await fetchVideoPage(user.secUid, 0, requestEnv, profileUrl, false)
+
+        const qualifyingRate = computeQualifyingRate(toProfileMetricItems(hotPage.items), filters)
+        const postRate = computePostRate(toProfileMetricItems(recentPage.items))
+        return {qualifyingRate, postRate}
     }
 
     static async collectCurrentProfile(
         maxVideoCount: number,
-        startYear: number,
-        endYear: number,
+        fromTs: number,
+        toTs: number,
+        filters: CollectFilterOptions,
         onSelectedCount?: (selectedCount: number, targetCount: number) => void,
         onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
         onDownloadFailed?: (videoId: string) => void,
@@ -666,8 +737,9 @@ export class Collector {
         return await Collector.collectProfileByUsername(
             username,
             maxVideoCount,
-            startYear,
-            endYear,
+            fromTs,
+            toTs,
+            filters,
             onSelectedCount,
             onDownloadProgress,
             onDownloadFailed,

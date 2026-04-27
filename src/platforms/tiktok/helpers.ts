@@ -1,5 +1,4 @@
 import {FixedOverlay} from '../../shared/ui-overlay';
-import {getInfluencerPoolCount} from '../../shared/influencer-pool';
 
 export class UiHelper {
     private static overlay: FixedOverlay | null = null;
@@ -62,12 +61,14 @@ export class UiHelper {
 
         const isVideo = VideoHelper.isVideoPage();
         const isProfile = UrlHelper.isProfilePage();
-        const poolCount = isProfile ? await getInfluencerPoolCount('tiktok') : 0;
+        const isHome = UrlHelper.isHomePage();
 
         if (isVideo) {
             UiHelper.overlay.setStatus('tiktok', 'TikTok (Video)');
         } else if (isProfile) {
-            UiHelper.overlay.setStatus('tiktok', `TikTok (Profile) · 池子 ${poolCount}`);
+            UiHelper.overlay.setStatus('tiktok', 'TikTok (Profile)');
+        } else if (isHome) {
+            UiHelper.overlay.setStatus('tiktok', 'TikTok (Home)');
         } else {
             UiHelper.overlay.setStatus('tiktok', 'TikTok (Non-Video)');
         }
@@ -78,9 +79,9 @@ export class UiHelper {
         UiHelper.overlay.setButtonEnabled('下载', isVideo && !UiHelper.batchCollecting);
         UiHelper.overlay.setButtonVisible('采集', isProfile);
         UiHelper.overlay.setButtonEnabled('采集', isProfile && !UiHelper.batchCollecting);
-        UiHelper.overlay.setButtonVisible('批量采集', isProfile);
-        UiHelper.overlay.setButtonEnabled('批量采集', isProfile && poolCount > 0 && !UiHelper.batchCollecting);
-        UiHelper.overlay.setButtonText('批量采集', UiHelper.batchCollecting ? '批量采集中...' : `批量采集 (${poolCount})`);
+        UiHelper.overlay.setButtonVisible('批量采集', isHome);
+        UiHelper.overlay.setButtonEnabled('批量采集', isHome && !UiHelper.batchCollecting);
+        UiHelper.overlay.setButtonText('批量采集', UiHelper.batchCollecting ? '批量采集中...' : '批量采集');
     }
 
     public static async setBatchCollecting(value: boolean) {
@@ -205,6 +206,11 @@ export class VideoHelper {
 }
 
 export class UrlHelper {
+    static isHomePage(url: string = window.location.href): boolean {
+        const pathname = new URL(url, window.location.origin).pathname
+        return pathname === '/'
+    }
+
     static isProfilePage(url: string = window.location.href): boolean {
         const pathname = new URL(url, window.location.origin).pathname
         return /^\/@[^/]+\/?$/.test(pathname)

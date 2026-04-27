@@ -21,7 +21,9 @@ export default {
         '*://*.tiktokcdn.com/*',
         '*://*.tiktokcdn-us.com/*',
         '*://*.tiktokv.com/*',
-        '*://*.noxinfluencer.com/*'
+        '*://*.noxinfluencer.com/*',
+        'https://script.google.com/*',
+        'https://script.googleusercontent.com/*'
     ],
     background: {service_worker: 'background.js'},
     content_scripts: [

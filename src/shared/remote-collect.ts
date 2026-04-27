@@ -2,13 +2,15 @@ import {safeSendMessage} from './messaging'
 
 export const PREPARE_TK_TAB = 'prepare_tk_tab'
 export const PREPARE_IG_TAB = 'prepare_ig_tab'
+export const TK_PROFILE_METRICS_VIA_TAB = 'tk_profile_metrics_via_tab'
+export const TK_PROFILE_METRICS_REMOTE = 'tk_profile_metrics_remote'
 export const TK_COLLECT_VIA_TAB = 'tk_collect_via_tab'
 export const TK_COLLECT_REMOTE = 'tk_collect_remote'
 export const TK_COLLECT_PROGRESS = 'tk_collect_progress'
 export const TK_PREPARE_PAGE_CONTEXT = 'tk_prepare_page_context'
 export const NOX_LOG = 'nox_log'
 
-export interface RemoteDownloadSummary {
+interface RemoteDownloadSummary {
     succeeded: number
     failed: number
     attempted: number
@@ -42,10 +44,11 @@ export interface TkCollectViaTabResponse {
     error?: string
 }
 
-export interface TkCollectProgressMessage {
-    type: typeof TK_COLLECT_PROGRESS
-    clientTabId: number
-    message: string
+export interface TkProfileMetricsResponse {
+    ok: boolean
+    qualifyingRate?: number
+    postRate?: number
+    error?: string
 }
 
 interface TkCollectProgressResponse {
@@ -53,7 +56,7 @@ interface TkCollectProgressResponse {
     error?: string
 }
 
-export interface NoxLogMessage {
+interface NoxLogMessage {
     type: typeof NOX_LOG
     message: string
 }

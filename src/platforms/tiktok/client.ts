@@ -312,18 +312,6 @@ export async function fetchHtml(url: string): Promise<string> {
     return await response.text()
 }
 
-export async function fetchJson<T>(url: string, referrer?: string): Promise<T> {
-    const response = await request(url, {
-        method: 'GET',
-        mode: 'cors',
-        referrer,
-        headers: {accept: 'application/json, text/plain, */*'}
-    })
-    ensureOk(response)
-    const text = await response.text()
-    return parseJsonText<T>(text, response.headers.get('content-type') || '')
-}
-
 export async function fetchHead(url: string, referrer?: string): Promise<Response> {
     return await request(url, {method: 'HEAD', mode: 'cors', referrer})
 }
@@ -341,20 +329,23 @@ export async function fetchBinary(url: string, referrer?: string): Promise<Binar
     }
 }
 
-export async function fetchHotVideoPage(
+export async function fetchVideoPage(
     secUid: string,
     cursor: number,
     requestEnv: RequestEnv,
-    referrer: string
+    referrer: string,
+    hot = true
 ): Promise<ItemListPageResponse> {
     const url = buildCommonApiUrl('/api/post/item_list/', requestEnv)
     url.searchParams.set('count', '35')
     url.searchParams.set('coverFormat', '2')
     url.searchParams.set('cursor', String(cursor))
     url.searchParams.set('from_page', 'user')
-    url.searchParams.set('needPinnedItemIds', 'true')
-    url.searchParams.set('post_item_list_request_type', '1')
     url.searchParams.set('secUid', secUid)
+    if (hot) {
+        url.searchParams.set('needPinnedItemIds', 'true')
+        url.searchParams.set('post_item_list_request_type', '1')
+    }
 
     const payload = await pageFetch(url.toString(), {
         method: 'GET',

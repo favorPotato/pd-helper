@@ -374,14 +374,10 @@ export class Extractor {
         }
 
         try {
-            const htmlPromise = needsHtml
-                ? RequestHelper.fetchPostHtml(shortcode, routeKind)
-                : Promise.resolve<string | null>(null)
-            const commentsPromise = shouldPrefetchComments && mediaId
-                ? RequestHelper.fetchCommentsPage(mediaId, null)
-                : Promise.resolve<Awaited<ReturnType<typeof RequestHelper.fetchCommentsPage>>>(null)
-
-            const [html, commentsPage] = await Promise.all([htmlPromise, commentsPromise])
+            const [html, commentsPage] = await Promise.all([
+                needsHtml ? RequestHelper.fetchPostHtml(shortcode, routeKind) : null,
+                shouldPrefetchComments && mediaId ? RequestHelper.fetchCommentsPage(mediaId, null) : null
+            ])
 
             if (needsHtml && !html) {
                 return {shortcodeWebInfo, commentsConnection, commentsPage, fetchFailed: true}
@@ -765,7 +761,6 @@ export class Analyzer {
             await Analyzer.downloadMedia(result.media.media_url, filename)
         }
 
-        console.log('=== 降级方案数据 ===\n', output)
         await Analyzer.downloadText(`${shortcode}.txt`, output)
     }
 

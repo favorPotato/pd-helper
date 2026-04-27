@@ -1,6 +1,6 @@
 import {FixedOverlay} from '../../shared/ui-overlay'
 import {getSelectedCount} from './scraper'
-import {getInfluencerPoolCount} from './state'
+
 import type {InfluencerPlatform} from './types'
 
 export class UiHelper {
@@ -9,12 +9,17 @@ export class UiHelper {
     private static selectionTimer: number | null = null
     private static audienceCollecting = false
     private static tkCollecting = false
+    private static autoCollecting = false
+    private static backfillCollecting = false
+    private static autoCollectStatus = ''
+    private static sheetsAlive = true
 
     public static async inject(handlers: {
         onCollectAudience: () => Promise<void>
         onCollectTikTok: () => Promise<void>
-        onExportPool: () => Promise<void>
-        onClearPool: () => Promise<void>
+        onAutoCollect?: () => Promise<void>
+        onBackfillProfiles?: () => Promise<void>
+        onPauseResume?: () => Promise<void>
     }): Promise<void> {
         if (!UiHelper.overlay) {
             UiHelper.overlay = new FixedOverlay()
@@ -23,25 +28,37 @@ export class UiHelper {
         await UiHelper.overlay.inject('nox')
         UiHelper.overlay.setStatus('nox', 'NoxInfluencer')
 
-        UiHelper.overlay.addButton('采集画像', '#ff6b35', async (event) => {
+        if (handlers.onAutoCollect) {
+            UiHelper.overlay.addButton('自动采集', '#7c3aed', async (event) => {
+                event.stopPropagation()
+                await handlers.onAutoCollect!()
+            }, false)
+        }
+
+        if (handlers.onPauseResume) {
+            UiHelper.overlay.addButton('暂停', '#f59e0b', async (event) => {
+                event.stopPropagation()
+                await handlers.onPauseResume!()
+            }, false)
+        }
+
+        UiHelper.overlay.addButton('手动选中', '#ff6b35', async (event) => {
             event.stopPropagation()
             await handlers.onCollectAudience()
         }, false)
+
+        if (handlers.onBackfillProfiles) {
+            UiHelper.overlay.addButton('回填画像', '#2563eb', async (event) => {
+                event.stopPropagation()
+                await handlers.onBackfillProfiles!()
+            }, false)
+        }
 
         UiHelper.overlay.addButton('TK采集', '#111111', async (event) => {
             event.stopPropagation()
             await handlers.onCollectTikTok()
         }, false)
 
-        UiHelper.overlay.addButton('导出博主', '#0ea5e9', async (event) => {
-            event.stopPropagation()
-            await handlers.onExportPool()
-        }, false)
-
-        UiHelper.overlay.addButton('清空池子', '#ef4444', async (event) => {
-            event.stopPropagation()
-            await handlers.onClearPool()
-        }, false)
 
         if (UiHelper.urlCleanup) {
             UiHelper.urlCleanup()
@@ -66,39 +83,57 @@ export class UiHelper {
         const platform = UrlHelper.getSearchPlatform()
         const isSearchPage = UrlHelper.isSearchPage()
         const selectedCount = isSearchPage ? getSelectedCount() : 0
-        const poolCount = platform ? await getInfluencerPoolCount(platform) : 0
-        const busy = UiHelper.audienceCollecting || UiHelper.tkCollecting
+        const busy = UiHelper.audienceCollecting || UiHelper.tkCollecting || UiHelper.autoCollecting || UiHelper.backfillCollecting
+        const canOperate = UiHelper.sheetsAlive && !busy
 
-        UiHelper.overlay.setStatus('nox', `${UrlHelper.getStatusLabel()} · 池子 ${poolCount} 人`)
+        const statusParts = [UrlHelper.getStatusLabel()]
+        if (!UiHelper.sheetsAlive) {
+            statusParts.push('Sheets 不可用')
+        } else if (UiHelper.autoCollecting && UiHelper.autoCollectStatus) {
+            statusParts.push(UiHelper.autoCollectStatus)
+        }
+        UiHelper.overlay.setStatus('nox', statusParts.join(' · '))
 
-        UiHelper.overlay.setButtonVisible('采集画像', isSearchPage)
-        UiHelper.overlay.setButtonEnabled('采集画像', isSearchPage && selectedCount > 0 && !busy)
-        UiHelper.overlay.setButtonText('采集画像', UiHelper.audienceCollecting ? '采集画像中...' : (isSearchPage && selectedCount <= 0 ? '采集画像 (请选中博主)' : `采集画像 (${selectedCount})`))
+        UiHelper.overlay.setButtonVisible('自动采集', isSearchPage && platform === 'tiktok')
+        UiHelper.overlay.setButtonEnabled('自动采集', isSearchPage && canOperate)
+        UiHelper.overlay.setButtonText('自动采集', UiHelper.autoCollecting ? '采集中...' : '自动采集')
+
+        UiHelper.overlay.setButtonVisible('暂停', UiHelper.autoCollecting)
+        UiHelper.overlay.setButtonEnabled('暂停', true)
+        UiHelper.overlay.setButtonText('暂停', '暂停')
+
+        UiHelper.overlay.setButtonVisible('手动选中', isSearchPage)
+        UiHelper.overlay.setButtonEnabled('手动选中', isSearchPage && selectedCount > 0 && canOperate)
+        UiHelper.overlay.setButtonText('手动选中', UiHelper.audienceCollecting ? '手动选中...' : '手动选中')
+
+        UiHelper.overlay.setButtonVisible('回填画像', isSearchPage && platform === 'tiktok')
+        UiHelper.overlay.setButtonEnabled('回填画像', isSearchPage && platform === 'tiktok' && canOperate)
+        UiHelper.overlay.setButtonText('回填画像', UiHelper.backfillCollecting ? '回填中...' : '回填画像')
 
         const isTikTokSearchPage = platform === 'tiktok'
         UiHelper.overlay.setButtonVisible('TK采集', isTikTokSearchPage)
-        UiHelper.overlay.setButtonEnabled('TK采集', isTikTokSearchPage && poolCount > 0 && !busy)
-        UiHelper.overlay.setButtonText('TK采集', UiHelper.tkCollecting ? 'TK采集中...' : `TK采集 (${poolCount})`)
+        UiHelper.overlay.setButtonEnabled('TK采集', isTikTokSearchPage && UiHelper.sheetsAlive && !busy)
+        UiHelper.overlay.setButtonText('TK采集', UiHelper.tkCollecting ? 'TK采集中...' : 'TK采集')
 
-        UiHelper.overlay.setButtonVisible('导出博主', true)
-        UiHelper.overlay.setButtonEnabled('导出博主', poolCount > 0 && !busy)
 
-        UiHelper.overlay.setButtonVisible('清空池子', true)
-        UiHelper.overlay.setButtonEnabled('清空池子', poolCount > 0 && !busy)
     }
 
-    public static async setBusyState(next: {audienceCollecting?: boolean; tkCollecting?: boolean}): Promise<void> {
-        if (typeof next.audienceCollecting === 'boolean') {
-            UiHelper.audienceCollecting = next.audienceCollecting
-        }
-        if (typeof next.tkCollecting === 'boolean') {
-            UiHelper.tkCollecting = next.tkCollecting
-        }
+    public static async setBusyState(next: {audienceCollecting?: boolean; tkCollecting?: boolean; autoCollecting?: boolean; backfillCollecting?: boolean}): Promise<void> {
+        if (typeof next.audienceCollecting === 'boolean') UiHelper.audienceCollecting = next.audienceCollecting
+        if (typeof next.tkCollecting === 'boolean') UiHelper.tkCollecting = next.tkCollecting
+        if (typeof next.autoCollecting === 'boolean') UiHelper.autoCollecting = next.autoCollecting
+        if (typeof next.backfillCollecting === 'boolean') UiHelper.backfillCollecting = next.backfillCollecting
         await UiHelper.refreshEnabledState()
     }
 
-    public static async refreshState(): Promise<void> {
-        await UiHelper.refreshEnabledState()
+    public static setAutoCollectStatus(status: string): void {
+        UiHelper.autoCollectStatus = status
+        void UiHelper.refreshEnabledState()
+    }
+
+    public static setSheetsAlive(alive: boolean): void {
+        UiHelper.sheetsAlive = alive
+        void UiHelper.refreshEnabledState()
     }
 
     public static log(message: unknown): void {
@@ -106,7 +141,7 @@ export class UiHelper {
     }
 }
 
-export class UrlHelper {
+class UrlHelper {
     static isSearchPage(): boolean {
         return UrlHelper.getSearchPlatform() !== null
     }

@@ -1,8 +1,9 @@
-import type {DownloadMessage, ScriptApiRequestMessage, ScriptApiResponse} from '../types'
+import type {AppsScriptRequestMessage, AppsScriptResponse, DownloadMessage, NoxSearchRequestMessage, ScriptApiRequestMessage, ScriptApiResponse} from '../types'
 import {idbGet, idbPut, idbDelete, IDB_KEY, clearStaleCache, parseVideoMeta, type CachedVideo} from './idb'
 import {truncateError} from './errors'
 import {loadHeaderCache, getHeaderValues, getHeaderStatus, setupHeaderListener} from './header-cache'
-import {SCRIPT_API_BASE, SCRIPT_API_KEY} from './env'
+import {APPS_SCRIPT_TOKEN, APPS_SCRIPT_URL, SCRIPT_API_BASE, SCRIPT_API_KEY} from './env'
+
 import {
     NOX_LOG,
     PREPARE_IG_TAB,
@@ -12,6 +13,8 @@ import {
     TK_COLLECT_PROGRESS,
     TK_COLLECT_REMOTE,
     TK_COLLECT_VIA_TAB,
+    TK_PROFILE_METRICS_REMOTE,
+    TK_PROFILE_METRICS_VIA_TAB,
     TK_PREPARE_PAGE_CONTEXT
 } from './remote-collect'
 import {delay} from './timing'
@@ -116,6 +119,44 @@ async function requestScriptApi(request: ScriptApiRequestMessage): Promise<Scrip
             status: response.status,
             data,
             error: extractScriptApiError(data, `请求失败 (${response.status})`)
+        }
+    } catch (error) {
+        return {
+            ok: false,
+            status: 0,
+            data: null,
+            error: truncateError(error instanceof Error ? error.message : String(error), 500)
+        }
+    }
+}
+
+async function requestAppsScript(request: AppsScriptRequestMessage): Promise<AppsScriptResponse> {
+    if (!APPS_SCRIPT_URL) {
+        return {ok: false, status: 0, data: null, error: 'APPS_SCRIPT_URL 未配置'}
+    }
+
+    try {
+        const response = await fetch(APPS_SCRIPT_URL, {
+            method: 'POST',
+            headers: {'content-type': 'application/json'},
+            body: JSON.stringify({
+                action: request.action,
+                payload: request.payload,
+                token: APPS_SCRIPT_TOKEN
+            })
+        })
+        const text = await response.text()
+        const data = parseJsonIfPossible(text)
+
+        if (response.ok) {
+            return {ok: true, status: response.status, data}
+        }
+
+        return {
+            ok: false,
+            status: response.status,
+            data,
+            error: extractScriptApiError(data, `Apps Script 请求失败 (${response.status})`)
         }
     } catch (error) {
         return {
@@ -243,6 +284,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true
     }
 
+    if (request.type === 'apps_script_request') {
+        ;(async () => {
+            sendResponse(await requestAppsScript(request as AppsScriptRequestMessage))
+        })()
+        return true
+    }
+
     if (request.type === 'cache_store_whole') {
         if (!Array.isArray(request.bytes) || request.bytes.length === 0) {
             sendResponse({ok: false, error: 'Invalid bytes format'})
@@ -353,6 +401,67 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true
     }
 
+    if (request.type === 'reset_tk_tab') {
+        ;(async () => {
+            try {
+                const cookies = await chrome.cookies.getAll({domain: '.tiktok.com'})
+                for (const c of cookies) {
+                    const protocol = c.secure ? 'https' : 'http'
+                    await chrome.cookies.remove({url: `${protocol}://${c.domain}${c.path}`, name: c.name})
+                }
+                const tabs = await chrome.tabs.query({url: TK_TAB.urlPattern})
+                for (const tab of tabs) {
+                    if (tab.id) await chrome.tabs.remove(tab.id)
+                }
+                sendResponse({ok: true, removed: cookies.length})
+            } catch (error) {
+                sendResponse({ok: false, error: String(error)})
+            }
+        })()
+        return true
+    }
+
+    if (request.type === 'nox_search_request') {
+        ;(async () => {
+            try {
+                const response = await fetch(request.url, {
+                    headers: {accept: 'application/json'}
+                })
+                const text = await response.text()
+                const data = text.startsWith('{') ? JSON.parse(text) : null
+                sendResponse({ok: response.ok, status: response.status, data})
+            } catch (error) {
+                sendResponse({ok: false, status: 0, data: null, error: String(error)})
+            }
+        })()
+        return true
+    }
+
+    if (request.type === TK_PROFILE_METRICS_VIA_TAB) {
+        ;(async () => {
+            try {
+                const tabId = typeof request.tabId === 'number' ? request.tabId : 0
+                const clientTabId = sender.tab?.id || 0
+                if (!tabId) {
+                    sendResponse({ok: false, error: 'invalid_tab_id'})
+                    return
+                }
+
+                const result = await chrome.tabs.sendMessage(tabId, {
+                    type: TK_PROFILE_METRICS_REMOTE,
+                    clientTabId,
+                    username: request.username,
+                    minLikeRate: request.minLikeRate,
+                    maxDurationSec: request.maxDurationSec,
+                })
+                sendResponse(result)
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
+        })()
+        return true
+    }
+
     if (request.type === TK_COLLECT_VIA_TAB) {
         ;(async () => {
             try {
@@ -368,6 +477,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     clientTabId,
                     username: request.username,
                     maxVideoCount: request.maxVideoCount,
+                    fromTs: request.fromTs,
+                    toTs: request.toTs,
+                    minLikeRate: request.minLikeRate,
+                    maxDurationSec: request.maxDurationSec,
                     startYear: request.startYear,
                     endYear: request.endYear,
                     filenamePrefix: request.filenamePrefix

@@ -1,6 +1,6 @@
-export type Platform = 'tiktok' | 'instagram' | 'nox' | 'unknown';
+type Platform = 'tiktok' | 'instagram' | 'nox' | 'unknown';
 
-export interface OverlayButton {
+interface OverlayButton {
     text: string;
     color: string;
     onClick: (e: MouseEvent) => void;

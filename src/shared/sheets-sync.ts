@@ -1,0 +1,153 @@
+import {callAppsScript} from './apps-script-client'
+import {showAlarm} from './alarm'
+
+interface QueueItem {
+    id: number
+    op: 'upsertInfluencers' | 'updateInfluencerStatus' | 'upsertVideos'
+    payload: unknown
+}
+
+interface SyncState {
+    queue: QueueItem[]
+    nextId: number
+    upsertedInfluencers: number
+    upsertedAudienceProfiles: number
+}
+
+interface SyncStatus {
+    pendingQueueSize: number
+    upsertedInfluencers: number
+    upsertedAudienceProfiles: number
+}
+
+const STORAGE_KEY = 'sheets_sync_v1'
+const HARD_WATERMARK = 2000
+
+let workerTimer: number | null = null
+let workerStarted = false
+let retryDelay = 1000
+let consecutiveFailures = 0
+let isProcessing = false
+
+async function loadState(): Promise<SyncState> {
+    const data = await chrome.storage.local.get(STORAGE_KEY)
+    const raw = data[STORAGE_KEY] as Partial<SyncState> | undefined
+    if (raw && typeof raw === 'object' && Array.isArray(raw.queue)) {
+        return raw as SyncState
+    }
+    return {queue: [], nextId: 1, upsertedInfluencers: 0, upsertedAudienceProfiles: 0}
+}
+
+function clearWorkerTimer(): void {
+    if (workerTimer !== null) {
+        clearTimeout(workerTimer)
+        workerTimer = null
+    }
+}
+
+function scheduleWorker(delay: number): void {
+    if (!workerStarted) return
+    clearWorkerTimer()
+    workerTimer = self.setTimeout(() => {
+        workerTimer = null
+        void runWorkerCycle()
+    }, Math.max(0, delay)) as unknown as number
+}
+
+async function saveState(state: SyncState): Promise<void> {
+    await chrome.storage.local.set({[STORAGE_KEY]: state})
+}
+
+async function enqueue(item: Omit<QueueItem, 'id'>): Promise<void> {
+    const state = await loadState()
+    const newItem: QueueItem = {...item, id: state.nextId}
+    state.nextId += 1
+    state.queue.push(newItem)
+    await saveState(state)
+    checkWatermark(state.queue.length)
+    if (workerStarted) scheduleWorker(0)
+}
+
+function checkWatermark(queueSize: number): void {
+    if (queueSize > HARD_WATERMARK) {
+        showAlarm(`Sheets 同步阻塞（队列 ${queueSize} 条），请检查网络/token`, 20_000)
+    }
+}
+
+export async function enqueueUpsertInfluencers(platform: string, items: unknown[]): Promise<void> {
+    await enqueue({op: 'upsertInfluencers', payload: {platform, influencers: items}})
+}
+
+export async function enqueueUpdateStatus(platform: string, channelId: string, patch: Record<string, unknown>): Promise<void> {
+    await enqueue({op: 'updateInfluencerStatus', payload: {platform, channelId, patch}})
+}
+
+export async function enqueueUpsertVideos(platform: string, videos: unknown[]): Promise<void> {
+    if (videos.length === 0) return
+    await enqueue({op: 'upsertVideos', payload: {platform, videos}})
+}
+
+async function processNext(): Promise<boolean> {
+    const state = await loadState()
+    if (state.queue.length === 0) return false
+
+    const item = state.queue[0]
+    try {
+        await callAppsScript(item.op, item.payload)
+        const fresh = await loadState()
+        fresh.queue = fresh.queue.filter(q => q.id !== item.id)
+        if (item.op === 'upsertInfluencers') fresh.upsertedInfluencers += 1
+        if (item.op === 'updateInfluencerStatus') fresh.upsertedAudienceProfiles += 1
+        await saveState(fresh)
+        retryDelay = 1000
+        consecutiveFailures = 0
+        return fresh.queue.length > 0
+    } catch (error) {
+        consecutiveFailures += 1
+        const msg = error instanceof Error ? error.message : String(error)
+        if (msg.includes('429') || msg.includes('quota')) {
+            retryDelay = 60_000
+        } else {
+            retryDelay = Math.min(retryDelay * 2, 30_000)
+        }
+        if (consecutiveFailures >= 10) {
+            showAlarm('Sheets 同步连续失败 10 次，已暂停', 20_000)
+        }
+        return false
+    }
+}
+
+async function runWorkerCycle(): Promise<void> {
+    if (isProcessing) return
+    isProcessing = true
+    try {
+        let hasMore = true
+        while (hasMore) {
+            hasMore = await processNext()
+            if (hasMore) await new Promise(r => setTimeout(r, 200))
+        }
+    } finally {
+        isProcessing = false
+        const state = await loadState()
+        if (workerStarted && state.queue.length > 0) {
+            scheduleWorker(consecutiveFailures > 0 ? retryDelay : 200)
+        }
+    }
+}
+
+export async function getSyncStatus(): Promise<SyncStatus> {
+    const state = await loadState()
+    return {
+        pendingQueueSize: state.queue.length,
+        upsertedInfluencers: state.upsertedInfluencers,
+        upsertedAudienceProfiles: state.upsertedAudienceProfiles,
+    }
+}
+
+export function startSyncWorker(): void {
+    if (workerStarted) return
+    workerStarted = true
+    scheduleWorker(0)
+}
+
+export {HARD_WATERMARK}

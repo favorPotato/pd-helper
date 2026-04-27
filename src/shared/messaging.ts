@@ -1,4 +1,4 @@
-export function checkChromeRuntime(): boolean {
+function checkChromeRuntime(): boolean {
     if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
         console.error('[Extension] chrome.runtime not available')
         return false

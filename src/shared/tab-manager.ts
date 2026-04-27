@@ -59,33 +59,31 @@ async function getOrCreateTab(target: TabTarget): Promise<chrome.tabs.Tab> {
     })
 }
 
-async function waitForTabComplete(tabId: number, matchRe: RegExp, timeoutMs = 20000): Promise<void> {
+async function waitForTabComplete(tabId: number, matchRe: RegExp, timeoutMs = 20000): Promise<boolean> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
         const tab = await chrome.tabs.get(tabId)
         if (tab.status === 'complete' && matchRe.test(tab.url || '')) {
-            return
+            return true
         }
         await delay(250)
     }
-
-    throw new Error('timeout_waiting_for_tab_complete')
+    return false
 }
 
-export async function waitForTabSelector(tabId: number, selector: string, timeoutMs = 15000): Promise<void> {
+async function waitForTabSelector(tabId: number, selector: string, timeoutMs = 15000): Promise<boolean> {
     const start = Date.now()
     while (Date.now() - start < timeoutMs) {
         try {
             if (await queryTabSelector(tabId, selector)) {
-                return
+                return true
             }
         } catch {
         }
 
         await delay(250)
     }
-
-    throw new Error(`timeout_waiting_for_selector:${selector}`)
+    return false
 }
 
 async function pingContentScript(tabId: number): Promise<unknown> {
@@ -112,23 +110,24 @@ export async function ensureTabReady(target: TabTarget, options: EnsureTabReadyO
     try {
         const tab = await getOrCreateTab(target)
         if (!tab.id) {
-            throw new Error('missing_tab_id')
+            return {ok: false, reason: 'tab_error', error: 'missing_tab_id'}
         }
 
         if (options.activate) {
             await activateTab(tab.id)
         }
 
-        try {
-            await waitForTabComplete(tab.id, target.matchRe)
-            if (options.readySelector) {
-                await waitForTabSelector(tab.id, options.readySelector, options.selectorTimeoutMs)
-            }
-            await ensureContentScript(tab.id)
-        } finally {
-            if (options.activate) {
-                await restoreTabIfNeeded(options.returnToTabId, tab.id)
-            }
+        if (!await waitForTabComplete(tab.id, target.matchRe)) {
+            if (options.activate) await restoreTabIfNeeded(options.returnToTabId, tab.id)
+            return {ok: false, reason: 'tab_error', error: 'timeout_waiting_for_tab_complete'}
+        }
+        if (options.readySelector && !await waitForTabSelector(tab.id, options.readySelector, options.selectorTimeoutMs)) {
+            if (options.activate) await restoreTabIfNeeded(options.returnToTabId, tab.id)
+            return {ok: false, reason: 'tab_error', error: `timeout_waiting_for_selector:${options.readySelector}`}
+        }
+        await ensureContentScript(tab.id)
+        if (options.activate) {
+            await restoreTabIfNeeded(options.returnToTabId, tab.id)
         }
 
         return {ok: true, tab}
