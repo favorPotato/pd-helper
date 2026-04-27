@@ -404,16 +404,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'reset_tk_tab') {
         ;(async () => {
             try {
-                const cookies = await chrome.cookies.getAll({domain: '.tiktok.com'})
+                const tabId = typeof request.tabId === 'number' ? request.tabId : (sender.tab?.id || 0)
+                if (!tabId) {
+                    sendResponse({ok: false, error: 'invalid_tab_id'})
+                    return
+                }
+                const allCookies = await chrome.cookies.getAll({})
+                const cookies = allCookies.filter(c => c.domain === 'tiktok.com' || c.domain.endsWith('.tiktok.com'))
+                let removeFailed = 0
                 for (const c of cookies) {
                     const protocol = c.secure ? 'https' : 'http'
-                    await chrome.cookies.remove({url: `${protocol}://${c.domain}${c.path}`, name: c.name})
+                    const domain = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain
+                    try {
+                        await chrome.cookies.remove({url: `${protocol}://${domain}${c.path}`, name: c.name})
+                    } catch {
+                        removeFailed += 1
+                    }
                 }
-                const tabs = await chrome.tabs.query({url: TK_TAB.urlPattern})
-                for (const tab of tabs) {
-                    if (tab.id) await chrome.tabs.remove(tab.id)
-                }
-                sendResponse({ok: true, removed: cookies.length})
+                await chrome.tabs.remove(tabId)
+                sendResponse({ok: true, removed: cookies.length - removeFailed, removeFailed, closedTabs: 1})
             } catch (error) {
                 sendResponse({ok: false, error: String(error)})
             }

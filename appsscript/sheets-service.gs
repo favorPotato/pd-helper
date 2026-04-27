@@ -4,7 +4,8 @@ var SHEET_NAMES = {
   tkInfluencers: 'tk博主',
   tkVideos: 'tk视频',
   igInfluencers: 'ig博主',
-  igVideos: 'ig视频'
+  igVideos: 'ig视频',
+  noxPages: 'nox页码'
 };
 
 var INFLUENCER_HEADERS = [
@@ -20,6 +21,7 @@ var INFLUENCER_KEYS = [
 ];
 
 var VIDEO_HEADERS = ['视频ID', '视频数据'];
+var NOX_PAGE_HEADERS = ['URL', '页码', '备注'];
 
 function doPost(e) {
   try {
@@ -34,6 +36,8 @@ function doPost(e) {
     if (action === 'loadInfluencersMissingGenderTag') return reply(loadInfluencersMissingGenderTag_(payload));
     if (action === 'updateInfluencerStatus') return reply(updateInfluencerStatus_(payload));
     if (action === 'upsertVideos') return reply(upsertVideos_(payload));
+    if (action === 'getNoxPage') return reply(getNoxPage_(payload));
+    if (action === 'upsertNoxPage') return reply(upsertNoxPage_(payload));
     if (action === 'getCollectedVideoIds') return reply(getCollectedVideoIds_(payload));
     return reply({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
@@ -69,6 +73,16 @@ function getVideoSheet_(platform) {
   if (!sheet) {
     sheet = ss.insertSheet(name);
     sheet.getRange(1, 1, 1, VIDEO_HEADERS.length).setValues([VIDEO_HEADERS]);
+  }
+  return sheet;
+}
+
+function getNoxPageSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_NAMES.noxPages);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_NAMES.noxPages);
+    sheet.getRange(1, 1, 1, NOX_PAGE_HEADERS.length).setValues([NOX_PAGE_HEADERS]);
   }
   return sheet;
 }
@@ -287,6 +301,42 @@ function upsertVideos_(payload) {
   }
 
   return { ok: true, added: added, skipped: skipped };
+}
+
+function upsertNoxPage_(payload) {
+  var url = String(payload.url || '').trim();
+  var pageNum = payload.pageNum;
+  if (!url) return { ok: false, error: 'missing url' };
+
+  var sheet = getNoxPageSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    var urls = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < urls.length; i++) {
+      if (String(urls[i][0] || '').trim() !== url) continue;
+      sheet.getRange(i + 2, 2).setValue(pageNum);
+      return { ok: true, updated: true };
+    }
+  }
+
+  sheet.appendRow([url, pageNum, '']);
+  return { ok: true, added: true };
+}
+
+function getNoxPage_(payload) {
+  var url = String(payload.url || '').trim();
+  if (!url) return { ok: false, error: 'missing url' };
+
+  var sheet = getNoxPageSheet_();
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: true, found: false };
+
+  var rows = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (var i = 0; i < rows.length; i++) {
+    if (String(rows[i][0] || '').trim() !== url) continue;
+    return { ok: true, found: true, pageNum: Number(rows[i][1]) || 1 };
+  }
+  return { ok: true, found: false };
 }
 
 function getCollectedVideoIds_(payload) {

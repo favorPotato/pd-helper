@@ -1,6 +1,6 @@
 import {sleepRandom} from '../../shared/timing'
 import {isSessionError, showAlarm} from '../../shared/alarm'
-import {enqueueUpsertInfluencers, enqueueUpdateStatus, getSyncStatus, HARD_WATERMARK} from '../../shared/sheets-sync'
+import {enqueueUpsertInfluencers, enqueueUpdateStatus, enqueueUpsertNoxPage, getSyncStatus, HARD_WATERMARK} from '../../shared/sheets-sync'
 import {
     getCheckpoint,
     patchCheckpoint,
@@ -13,7 +13,7 @@ import {
 import {paginate} from './paginator'
 import {fetchAudienceProfile} from './client'
 import {buildExtraDataFromProfile, classifyGender, extractSearchExtra, type SearchExtra} from './profile-mapping'
-import type {SearchInfluencer} from './search-api'
+import {getSearchUrlWithoutPageNum, type SearchInfluencer} from './search-api'
 
 let mainLoopRunning = false
 
@@ -50,6 +50,7 @@ async function runPagingPhase(
     const existingIds = new Set<string>(cp.paging.newChannelIds)
     const searchData: Record<string, SearchExtra> = {...(cp.paging.searchData || {})}
     const remainingCount = Math.max(0, cp.params.targetCount - cp.paging.newChannelIds.length)
+    const searchUrl = getSearchUrlWithoutPageNum()
 
     if (remainingCount === 0) {
         await patchCheckpoint({
@@ -73,7 +74,11 @@ async function runPagingPhase(
             baseParams: cp.params.baseParams,
             startPageNum: cp.paging.nextPageNum,
             existingIds,
-            onPageCollected: async (pageInfluencers) => {
+            onPageCollected: async (pageInfluencers, nextPageNum) => {
+                await enqueueUpsertNoxPage(searchUrl, nextPageNum)
+
+                if (pageInfluencers.length === 0) return
+
                 for (const inf of pageInfluencers) {
                     newInfluencers.push(inf)
                     searchData[inf.id] = extractSearchExtra(inf)

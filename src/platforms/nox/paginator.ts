@@ -7,7 +7,7 @@ export interface PaginateOptions {
     baseParams: Record<string, unknown>
     startPageNum?: number
     existingIds?: Set<string>
-    onPageCollected?: (influencers: SearchInfluencer[]) => Promise<void>
+    onPageCollected?: (influencers: SearchInfluencer[], nextPageNum: number) => Promise<void>
 }
 
 export interface PaginateResult {
@@ -49,8 +49,8 @@ export async function paginate(
                 if (collected.length >= targetCount) break
             }
 
-            if (pageNew.length > 0 && opts.onPageCollected) {
-                await opts.onPageCollected(pageNew)
+            if (opts.onPageCollected) {
+                await opts.onPageCollected(pageNew, pageNum + 1)
             }
 
             pageNum += 1

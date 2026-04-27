@@ -19,7 +19,7 @@ import {UiHelper} from './helpers'
 import {scrapeSelectedInfluencers} from './scraper'
 import {backfillAudienceProfiles, startAutoCollect, resumeAutoCollect} from './auto-collect'
 import {readBaseParamsFromUrl} from './paginator'
-import {fetchSearchPage, type SearchInfluencer} from './search-api'
+import {fetchSearchPage, getSearchUrlWithoutPageNum, type SearchInfluencer} from './search-api'
 import {pauseLongTask} from './long-task'
 import {buildExtraDataFromProfile, classifyGender, extractSearchExtra} from './profile-mapping'
 import {startSyncWorker} from '../../shared/sheets-sync'
@@ -284,12 +284,41 @@ async function collectFromTikTokPool(): Promise<void> {
                     })
                 } else {
                     const errorMsg = metricsResult?.error || '指标预估失败'
-                    UiHelper.log(`${progress} ${errorMsg}，重建 TK 页后重试...`)
-                    await safeSendMessage({type: 'reset_tk_tab'})
-                    const newTab = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB})
-                    if (newTab?.ok && newTab.tabId) {
-                        tkTabId = newTab.tabId
+                    if (errorMsg.includes('当前博主已关闭评论功能')) {
+                        UiHelper.log(`${progress} ${errorMsg}，跳过`)
+                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
+                            status: 'failed',
+                            lastError: errorMsg.slice(0, 200),
+                            updatedAt: new Date().toISOString()
+                        })
+                        continue
                     }
+                    UiHelper.log(`${progress} ${errorMsg}，重建 TK tab 后重试...`)
+                    const resetResult = await safeSendMessage<{ok: boolean; removed?: number; removeFailed?: number; closedTabs?: number; error?: string}>({type: 'reset_tk_tab', tabId: tkTabId})
+                    if (!resetResult?.ok) {
+                        const resetError = resetResult?.error || 'reset_tk_tab 无响应'
+                        UiHelper.log(`${progress} TK tab 重建失败: ${resetError}`)
+                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
+                            status: 'failed',
+                            lastError: resetError.slice(0, 200),
+                            updatedAt: new Date().toISOString()
+                        })
+                        continue
+                    }
+                    UiHelper.log(`${progress} TK tab 重建完成: 关闭 ${resetResult.closedTabs || 0} 个 tab，清理 ${resetResult.removed || 0} 个 cookie，失败 ${resetResult.removeFailed || 0}`)
+                    const newTab = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB})
+                    if (!newTab?.ok || !newTab.tabId) {
+                        const tabError = newTab?.error || '新 TK 执行页不可用'
+                        UiHelper.log(`${progress} ${tabError}`)
+                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
+                            status: 'failed',
+                            lastError: tabError.slice(0, 200),
+                            updatedAt: new Date().toISOString()
+                        })
+                        continue
+                    }
+                    tkTabId = newTab.tabId
+                    UiHelper.log(`${progress} 新 TK 执行页就绪: ${newTab.href || '当前站内页'}`)
                     const retryResult = await safeSendMessage<TkProfileMetricsResponse>({
                         type: TK_PROFILE_METRICS_VIA_TAB,
                         tabId: tkTabId,
@@ -439,23 +468,33 @@ async function autoCollect(): Promise<void> {
     const result = await showDialog({
         title: '自动采集',
         fields: [
-            {key: 'targetCount', label: '目标博主数量', type: 'number', value: 5000, min: 1, max: 10000},
+            {key: 'targetCount', label: '目标博主数量', type: 'number', value: 5000, min: 1},
             {key: 'collectProfile', label: '同时采集画像', type: 'checkbox', value: true},
-            ...(currentPage > 1 ? [{
-                key: 'resumeFromCurrentPage',
-                label: `从当前页（第 ${currentPage} 页）开始`,
-                type: 'checkbox' as const,
-                value: true
-            }] : []),
+            {key: 'resumeFromSheets', label: '使用 Sheets 进度继续', type: 'checkbox', value: true},
             {key: 'info', label: '当前筛选条件已读取，预计耗时视数量而定', type: 'info'}
         ],
         confirmText: '开始'
     })
     if (!result) return
 
-    const targetCount = Math.min(Number(result.targetCount) || 5000, 10000)
+    const targetCount = Number(result.targetCount) || 5000
     const collectProfile = result.collectProfile === true
-    const startPageNum = (currentPage > 1 && result.resumeFromCurrentPage === true) ? currentPage : 1
+    let startPageNum = currentPage
+    if (result.resumeFromSheets === true) {
+        try {
+            const pageResp = await callAppsScript<{ok: boolean; found?: boolean; pageNum?: number; error?: string}>('getNoxPage', {
+                url: getSearchUrlWithoutPageNum()
+            })
+            if (pageResp.ok && pageResp.found && pageResp.pageNum) {
+                startPageNum = Math.max(1, Number(pageResp.pageNum) || currentPage)
+                UiHelper.log(`使用 Sheets 进度，从第 ${startPageNum} 页继续`)
+            } else {
+                UiHelper.log(`Sheets 未找到当前筛选进度，从当前页（第 ${currentPage} 页）开始`)
+            }
+        } catch (error) {
+            UiHelper.log(`读取 Sheets 页码失败，从当前页开始: ${truncateError(error, 200)}`)
+        }
+    }
 
     await UiHelper.setBusyState({autoCollecting: true})
     autoCollectPaused = false

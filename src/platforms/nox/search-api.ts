@@ -42,6 +42,19 @@ export function readBaseParamsFromUrl(): Record<string, unknown> {
     }
 }
 
+export function getSearchUrlWithoutPageNum(): string {
+    const url = new URL(window.location.href)
+    const p = url.searchParams.get('p')
+    if (!p) return url.toString()
+    try {
+        const params = decodeP(p) as Record<string, unknown>
+        delete params.pageNum
+        url.searchParams.set('p', encodeP(params))
+    } catch {
+    }
+    return url.toString()
+}
+
 function toTags(value: unknown): string[] {
     if (Array.isArray(value)) return value.map(String).filter(Boolean)
     if (typeof value === 'string' && value) return [value]

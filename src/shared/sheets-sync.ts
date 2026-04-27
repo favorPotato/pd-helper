@@ -3,7 +3,7 @@ import {showAlarm} from './alarm'
 
 interface QueueItem {
     id: number
-    op: 'upsertInfluencers' | 'updateInfluencerStatus' | 'upsertVideos'
+    op: 'upsertInfluencers' | 'updateInfluencerStatus' | 'upsertVideos' | 'upsertNoxPage'
     payload: unknown
 }
 
@@ -85,6 +85,10 @@ export async function enqueueUpdateStatus(platform: string, channelId: string, p
 export async function enqueueUpsertVideos(platform: string, videos: unknown[]): Promise<void> {
     if (videos.length === 0) return
     await enqueue({op: 'upsertVideos', payload: {platform, videos}})
+}
+
+export async function enqueueUpsertNoxPage(url: string, pageNum: number): Promise<void> {
+    await enqueue({op: 'upsertNoxPage', payload: {url, pageNum}})
 }
 
 async function processNext(): Promise<boolean> {

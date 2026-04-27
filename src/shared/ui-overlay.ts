@@ -393,8 +393,11 @@ export class FixedOverlay {
         }
 
         if (this.logBox) {
+            const shouldStickToBottom = this.logBox.scrollHeight - this.logBox.scrollTop - this.logBox.clientHeight < 24;
             this.logBox.textContent = this.logLines.join('\n') + '\n';
-            this.logBox.scrollTop = this.logBox.scrollHeight;
+            if (shouldStickToBottom) {
+                this.logBox.scrollTop = this.logBox.scrollHeight;
+            }
         }
     }
 
