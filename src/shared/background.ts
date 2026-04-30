@@ -1,5 +1,18 @@
 import type {AppsScriptRequestMessage, AppsScriptResponse, DownloadMessage, NoxSearchRequestMessage, ScriptApiRequestMessage, ScriptApiResponse} from '../types'
-import {idbGet, idbPut, idbDelete, IDB_KEY, clearStaleCache, parseVideoMeta, type CachedVideo} from './idb'
+import {
+    idbDelete,
+    idbDeleteSheetsSyncPayload,
+    idbGet,
+    idbGetSheetsSyncPayload,
+    idbGetSheetsSyncState,
+    idbPut,
+    idbPutSheetsSyncPayload,
+    idbPutSheetsSyncState,
+    IDB_KEY,
+    clearStaleCache,
+    parseVideoMeta,
+    type CachedVideo
+} from './idb'
 import {truncateError} from './errors'
 import {loadHeaderCache, getHeaderValues, getHeaderStatus, setupHeaderListener} from './header-cache'
 import {APPS_SCRIPT_TOKEN, APPS_SCRIPT_URL, SCRIPT_API_BASE, SCRIPT_API_KEY} from './env'
@@ -287,6 +300,81 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === 'apps_script_request') {
         ;(async () => {
             sendResponse(await requestAppsScript(request as AppsScriptRequestMessage))
+        })()
+        return true
+    }
+
+    if (request.type === 'sheets_sync_payload_put') {
+        ;(async () => {
+            try {
+                const id = Number(request.id)
+                if (!Number.isFinite(id)) {
+                    sendResponse({ok: false, error: 'invalid_payload_id'})
+                    return
+                }
+                await idbPutSheetsSyncPayload(id, request.payload)
+                sendResponse({ok: true})
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
+        })()
+        return true
+    }
+
+    if (request.type === 'sheets_sync_payload_get') {
+        ;(async () => {
+            try {
+                const id = Number(request.id)
+                if (!Number.isFinite(id)) {
+                    sendResponse({ok: false, error: 'invalid_payload_id'})
+                    return
+                }
+                const payload = await idbGetSheetsSyncPayload(id)
+                sendResponse({ok: true, payload})
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
+        })()
+        return true
+    }
+
+    if (request.type === 'sheets_sync_payload_delete') {
+        ;(async () => {
+            try {
+                const id = Number(request.id)
+                if (!Number.isFinite(id)) {
+                    sendResponse({ok: false, error: 'invalid_payload_id'})
+                    return
+                }
+                await idbDeleteSheetsSyncPayload(id)
+                sendResponse({ok: true})
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
+        })()
+        return true
+    }
+
+    if (request.type === 'sheets_sync_state_get') {
+        ;(async () => {
+            try {
+                const state = await idbGetSheetsSyncState()
+                sendResponse({ok: true, state})
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
+        })()
+        return true
+    }
+
+    if (request.type === 'sheets_sync_state_put') {
+        ;(async () => {
+            try {
+                await idbPutSheetsSyncState(request.state)
+                sendResponse({ok: true})
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
         })()
         return true
     }

@@ -17,10 +17,10 @@ import {callAppsScript} from '../../shared/apps-script-client'
 import {fetchAudienceProfile} from './client'
 import {UiHelper} from './helpers'
 import {scrapeSelectedInfluencers} from './scraper'
-import {backfillAudienceProfiles, startAutoCollect, resumeAutoCollect} from './auto-collect'
+import {backfillAudienceProfiles, startAutoCollect} from './auto-collect'
 import {readBaseParamsFromUrl} from './paginator'
 import {fetchSearchPage, getSearchUrlWithoutPageNum, type SearchInfluencer} from './search-api'
-import {pauseLongTask} from './long-task'
+import {pauseLongTask, resumeLongTask} from './long-task'
 import {buildExtraDataFromProfile, classifyGender, extractSearchExtra} from './profile-mapping'
 import {startSyncWorker} from '../../shared/sheets-sync'
 import type {InfluencerPlatform, NoxInfluencer} from './types'
@@ -518,13 +518,8 @@ async function pauseResumeAutoCollect(): Promise<void> {
         UiHelper.log('已暂停')
     } else {
         autoCollectPaused = false
-        await UiHelper.setBusyState({autoCollecting: true})
-        await resumeAutoCollect((msg) => {
-            UiHelper.setAutoCollectStatus(msg)
-            UiHelper.log(msg)
-        })
-        await UiHelper.setBusyState({autoCollecting: false})
-        UiHelper.setAutoCollectStatus('')
+        await resumeLongTask()
+        UiHelper.log('已继续')
     }
 }
 

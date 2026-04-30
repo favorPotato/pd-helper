@@ -4,7 +4,6 @@ import {showAlarm} from './alarm'
 interface QueueItem {
     id: number
     op: 'upsertInfluencers' | 'updateInfluencerStatus' | 'upsertVideos' | 'upsertNoxPage'
-    payload: unknown
 }
 
 interface SyncState {
@@ -20,7 +19,6 @@ interface SyncStatus {
     upsertedAudienceProfiles: number
 }
 
-const STORAGE_KEY = 'sheets_sync_v1'
 const HARD_WATERMARK = 2000
 
 let workerTimer: number | null = null
@@ -29,11 +27,46 @@ let retryDelay = 1000
 let consecutiveFailures = 0
 let isProcessing = false
 
+async function requestPayloadStore<T>(message: Record<string, unknown>): Promise<T | undefined> {
+    const response = await chrome.runtime.sendMessage(message) as {ok?: boolean; payload?: T; error?: string} | undefined
+    if (!response?.ok) throw new Error(response?.error || 'sheets_sync_payload_store_failed')
+    return response.payload
+}
+
+async function putPayload(id: number, payload: unknown): Promise<void> {
+    await requestPayloadStore({type: 'sheets_sync_payload_put', id, payload})
+}
+
+async function getPayload(id: number): Promise<unknown | undefined> {
+    return requestPayloadStore({type: 'sheets_sync_payload_get', id})
+}
+
+async function deletePayload(id: number): Promise<void> {
+    await requestPayloadStore({type: 'sheets_sync_payload_delete', id})
+}
+
+async function loadQueueState(): Promise<SyncState | undefined> {
+    return requestPayloadStore<SyncState>({type: 'sheets_sync_state_get'})
+}
+
+async function saveQueueState(state: SyncState): Promise<void> {
+    await requestPayloadStore({type: 'sheets_sync_state_put', state})
+}
+
+function isQueueOp(value: unknown): value is QueueItem['op'] {
+    return value === 'upsertInfluencers' || value === 'updateInfluencerStatus' || value === 'upsertVideos' || value === 'upsertNoxPage'
+}
+
 async function loadState(): Promise<SyncState> {
-    const data = await chrome.storage.local.get(STORAGE_KEY)
-    const raw = data[STORAGE_KEY] as Partial<SyncState> | undefined
+    const raw = await loadQueueState()
     if (raw && typeof raw === 'object' && Array.isArray(raw.queue)) {
-        return raw as SyncState
+        const queue = raw.queue.filter(item => Number.isFinite(Number(item.id)) && isQueueOp(item.op))
+        return {
+            queue,
+            nextId: Number(raw.nextId) || queue.reduce((max, item) => Math.max(max, item.id + 1), 1),
+            upsertedInfluencers: Number(raw.upsertedInfluencers) || 0,
+            upsertedAudienceProfiles: Number(raw.upsertedAudienceProfiles) || 0,
+        }
     }
     return {queue: [], nextId: 1, upsertedInfluencers: 0, upsertedAudienceProfiles: 0}
 }
@@ -55,13 +88,14 @@ function scheduleWorker(delay: number): void {
 }
 
 async function saveState(state: SyncState): Promise<void> {
-    await chrome.storage.local.set({[STORAGE_KEY]: state})
+    await saveQueueState(state)
 }
 
-async function enqueue(item: Omit<QueueItem, 'id'>): Promise<void> {
+async function enqueue(item: Omit<QueueItem, 'id'> & {payload: unknown}): Promise<void> {
     const state = await loadState()
-    const newItem: QueueItem = {...item, id: state.nextId}
+    const newItem: QueueItem = {id: state.nextId, op: item.op}
     state.nextId += 1
+    await putPayload(newItem.id, item.payload)
     state.queue.push(newItem)
     await saveState(state)
     checkWatermark(state.queue.length)
@@ -97,9 +131,18 @@ async function processNext(): Promise<boolean> {
 
     const item = state.queue[0]
     try {
-        await callAppsScript(item.op, item.payload)
+        const payload = await getPayload(item.id)
+        if (payload === undefined) {
+            const fresh = await loadState()
+            fresh.queue = fresh.queue.filter(q => q.id !== item.id)
+            await saveState(fresh)
+            return fresh.queue.length > 0
+        }
+
+        await callAppsScript(item.op, payload)
         const fresh = await loadState()
         fresh.queue = fresh.queue.filter(q => q.id !== item.id)
+        await deletePayload(item.id)
         if (item.op === 'upsertInfluencers') fresh.upsertedInfluencers += 1
         if (item.op === 'updateInfluencerStatus') fresh.upsertedAudienceProfiles += 1
         await saveState(fresh)

@@ -7,7 +7,7 @@ import {
     patchCheckpoint,
     startNoxAutoCollect,
     pauseLongTask,
-    resumeLongTask,
+    clearLongTask,
     type LongTaskCheckpoint,
     type NoxAutoCollectParams,
 } from './long-task'
@@ -47,7 +47,6 @@ interface ProfilingRunContext {
 
 interface ProfilingRunHooks {
     waitBeforeItem?: (onStatus: (msg: string) => void) => Promise<boolean>
-    onProgressPersist?: (state: {cursor: number; succeededCount: number; failedCount: number; lastFailedReason?: string}) => Promise<void>
     onSessionError?: () => Promise<void>
 }
 
@@ -68,32 +67,24 @@ async function runPagingPhase(
     profiledIds?: Set<string>
 ): Promise<{ok: boolean; newInfluencers: SearchInfluencer[]}> {
     const newInfluencers: SearchInfluencer[] = []
-    const existingIds = new Set<string>(cp.paging.newChannelIds)
-    const searchData: Record<string, SearchExtra> = {...(cp.paging.searchData || {})}
-    const remainingCount = Math.max(0, cp.params.targetCount - cp.paging.newChannelIds.length)
+    const existingIds = new Set<string>()
+    const searchData: Record<string, SearchExtra> = {}
+    const remainingCount = cp.params.targetCount
     const searchUrl = getSearchUrlWithoutPageNum()
 
     if (remainingCount === 0) {
-        await patchCheckpoint({
-            paging: {
-                ...cp.paging,
-                status: 'done',
-            }
-        })
         onStatus('目标博主数已完成，跳过翻页阶段')
         return {ok: true, newInfluencers}
     }
 
     const collectProfile = cp.params.collectProfile
-    let profilingSucceeded = 0
-    let profilingFailed = 0
     let profilingSessionError = false
 
     const result = await paginate(
         {
             targetCount: remainingCount,
             baseParams: cp.params.baseParams,
-            startPageNum: cp.paging.nextPageNum,
+            startPageNum: cp.params.startPageNum,
             existingIds,
             onPageCollected: async (pageInfluencers, nextPageNum) => {
                 await enqueueUpsertNoxPage(searchUrl, nextPageNum)
@@ -120,18 +111,9 @@ async function runPagingPhase(
                 }))
                 await enqueueUpsertInfluencers('tiktok', sheetsItems)
 
-                await patchCheckpoint({
-                    paging: {
-                        ...cp.paging,
-                        pagedCount: cp.paging.pagedCount + newInfluencers.length,
-                        newChannelIds: [...cp.paging.newChannelIds, ...newInfluencers.map(i => i.id)],
-                        searchData,
-                    }
-                })
-
                 if (collectProfile && !profilingSessionError) {
                     const pageChannelIds = pageInfluencers.map(inf => inf.id)
-                    const profilingResult = await runProfilingLoop({
+                    await runProfilingLoop({
                         channelIds: pageChannelIds,
                         cursor: 0,
                         succeededCount: 0,
@@ -145,8 +127,6 @@ async function runPagingPhase(
                             await pauseLongTask()
                         },
                     })
-                    profilingSucceeded += profilingResult.succeededCount
-                    profilingFailed += profilingResult.failedCount
                 }
             },
         },
@@ -156,28 +136,9 @@ async function runPagingPhase(
         }
     )
 
-    await patchCheckpoint({
-        paging: {
-            status: result.stopped === 'target_reached' || result.stopped === 'no_more_pages' ? 'done' : 'running',
-            nextPageNum: result.nextPageNum,
-            totalPages: result.totalPages,
-            pagedCount: cp.paging.pagedCount + newInfluencers.length,
-            newChannelIds: [...cp.paging.newChannelIds, ...newInfluencers.map(i => i.id)],
-            searchData,
-        },
-        ...(collectProfile ? {
-            profiling: {
-                status: profilingSessionError ? 'running' : 'done',
-                cursor: profilingSucceeded + profilingFailed,
-                succeededCount: cp.profiling.succeededCount + profilingSucceeded,
-                failedCount: cp.profiling.failedCount + profilingFailed,
-            }
-        } : {}),
-    })
-
     if (result.stopped === 'session_expired') {
-        showAlarm('Nox 登录失效，任务已暂停', 20_000)
-        await pauseLongTask()
+        showAlarm('Nox 登录失效，任务已停止，请登录后重新从 Sheets 页码继续', 20_000)
+        await patchCheckpoint({state: 'failed'})
         return {ok: false, newInfluencers}
     }
 
@@ -212,7 +173,6 @@ async function runProfilingLoop(
         if (profiledIds?.has(channelId)) {
             cursor = i + 1
             onStatus(`画像 ${i + 1}/${channelIds.length} 已回填，跳过`)
-            await hooks.onProgressPersist?.({cursor, succeededCount, failedCount})
             continue
         }
         onStatus(`画像 ${i + 1}/${channelIds.length}`)
@@ -230,12 +190,6 @@ async function runProfilingLoop(
                 extraData,
                 lastError: '',
                 updatedAt: new Date().toISOString(),
-            })
-
-            await hooks.onProgressPersist?.({
-                cursor,
-                succeededCount,
-                failedCount,
             })
 
             if (succeededCount % 500 === 0) {
@@ -261,45 +215,11 @@ async function runProfilingLoop(
                 lastError,
                 updatedAt: new Date().toISOString(),
             })
-            await hooks.onProgressPersist?.({
-                cursor,
-                succeededCount,
-                failedCount,
-                lastFailedReason: lastError,
-            })
             await sleepRandom(2000, 5000)
         }
     }
 
     return {cursor, succeededCount, failedCount, completed: true}
-}
-
-async function runProfilingPhase(
-    cp: LongTaskCheckpoint,
-    channelIds: string[],
-    onStatus: (msg: string) => void
-): Promise<void> {
-    await runProfilingLoop({
-        channelIds,
-        cursor: cp.profiling.cursor,
-        succeededCount: cp.profiling.succeededCount,
-        failedCount: cp.profiling.failedCount,
-        searchData: cp.paging.searchData || {},
-    }, onStatus, {
-        waitBeforeItem: waitIfPaused,
-        onProgressPersist: async ({cursor, succeededCount, failedCount, lastFailedReason}) => {
-            await patchCheckpoint({
-                profiling: {
-                    status: cursor >= channelIds.length ? 'done' : 'running',
-                    cursor,
-                    succeededCount,
-                    failedCount,
-                    ...(lastFailedReason ? {lastFailedReason} : {}),
-                }
-            })
-        },
-        onSessionError: pauseLongTask,
-    })
 }
 
 export async function backfillAudienceProfiles(
@@ -343,55 +263,12 @@ export async function startAutoCollect(params: NoxAutoCollectParams, onStatus: (
         cp = await getCheckpoint()
         if (!cp || cp.state !== 'running') return
 
-        await patchCheckpoint({
-            state: 'done',
-            profiling: {
-                ...cp.profiling,
-                status: params.collectProfile ? 'done' : 'skipped',
-            }
-        })
+        await patchCheckpoint({state: 'done'})
         onStatus(`全部完成！共 ${newInfluencers.length} 个博主${params.collectProfile ? '（含画像）' : ''}`)
         showAlarm('Nox 自动采集完成！', 10_000)
     } finally {
-        mainLoopRunning = false
-    }
-}
-
-export async function resumeAutoCollect(onStatus: (msg: string) => void): Promise<void> {
-    if (mainLoopRunning) return
-    mainLoopRunning = true
-
-    try {
-        await resumeLongTask()
-        let cp = await getCheckpoint()
-        if (!cp) return
-
-        if (cp.paging.status !== 'done') {
-            onStatus('恢复翻页采集...')
-            const profiledIds = cp.params.collectProfile ? await loadProfiledChannelIds(onStatus) : undefined
-            const {ok} = await runPagingPhase(cp, onStatus, profiledIds)
-            if (!ok) return
-            cp = await getCheckpoint()
-            if (!cp || cp.state !== 'running') return
-        }
-
-        if (!cp.params.collectProfile || cp.profiling.status === 'skipped') {
-            await patchCheckpoint({state: 'done'})
-            showAlarm('Nox 自动采集完成！', 10_000)
-            return
-        }
-
-        const allChannelIds = cp.paging.newChannelIds
-        onStatus(`恢复画像采集，从第 ${cp.profiling.cursor + 1}/${allChannelIds.length} 个开始...`)
-        await runProfilingPhase(cp, allChannelIds, onStatus)
-
-        cp = await getCheckpoint()
-        if (cp?.state === 'running') {
-            await patchCheckpoint({state: 'done'})
-            onStatus('全部完成！')
-            showAlarm('Nox 自动采集完成！', 10_000)
-        }
-    } finally {
+        const cp = await getCheckpoint()
+        if (cp?.state === 'done' || cp?.state === 'failed') await clearLongTask()
         mainLoopRunning = false
     }
 }
