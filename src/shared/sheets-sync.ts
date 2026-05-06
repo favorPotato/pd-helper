@@ -112,8 +112,15 @@ export async function enqueueUpsertInfluencers(platform: string, items: unknown[
     await enqueue({op: 'upsertInfluencers', payload: {platform, influencers: items}})
 }
 
-export async function enqueueUpdateStatus(platform: string, channelId: string, patch: Record<string, unknown>): Promise<void> {
-    await enqueue({op: 'updateInfluencerStatus', payload: {platform, channelId, patch}})
+export async function enqueueUpdateStatus(
+    platform: string,
+    channelId: string,
+    patch: Record<string, unknown>,
+    increment?: Record<string, number>
+): Promise<void> {
+    const payload: UpdateStatusPayload = {platform, channelId, patch}
+    if (increment && Object.keys(increment).length > 0) payload.increment = increment
+    await enqueue({op: 'updateInfluencerStatus', payload})
 }
 
 export async function enqueueUpsertVideos(platform: string, videos: unknown[]): Promise<void> {
@@ -125,10 +132,72 @@ export async function enqueueUpsertNoxPage(url: string, pageNum: number): Promis
     await enqueue({op: 'upsertNoxPage', payload: {url, pageNum}})
 }
 
-async function processNext(): Promise<boolean> {
-    const state = await loadState()
-    if (state.queue.length === 0) return false
+const BATCH_MAX = 200
 
+interface UpdateStatusPayload {
+    platform?: string
+    channelId: string
+    patch: Record<string, unknown>
+    increment?: Record<string, number>
+}
+
+function handleProcessError(error: unknown): void {
+    consecutiveFailures += 1
+    const msg = error instanceof Error ? error.message : String(error)
+    if (msg.includes('429') || msg.includes('quota')) {
+        retryDelay = 60_000
+    } else {
+        retryDelay = Math.min(retryDelay * 2, 30_000)
+    }
+    if (consecutiveFailures >= 10) {
+        showAlarm('Sheets 同步连续失败 10 次，已暂停', 20_000)
+    }
+}
+
+async function processStatusBatch(state: SyncState): Promise<boolean> {
+    const batch: QueueItem[] = []
+    for (let i = 0; i < state.queue.length && batch.length < BATCH_MAX; i++) {
+        if (state.queue[i].op !== 'updateInfluencerStatus') break
+        batch.push(state.queue[i])
+    }
+    if (batch.length < 2) return false
+
+    try {
+        const updates: Array<{channelId: string; patch: Record<string, unknown>; increment?: Record<string, number>}> = []
+        let platform = 'tiktok'
+        const missingIds: number[] = []
+        for (const it of batch) {
+            const p = await getPayload(it.id) as UpdateStatusPayload | undefined
+            if (!p || !p.channelId) { missingIds.push(it.id); continue }
+            if (p.platform) platform = p.platform
+            const update: {channelId: string; patch: Record<string, unknown>; increment?: Record<string, number>} = {
+                channelId: p.channelId,
+                patch: p.patch || {}
+            }
+            if (p.increment && Object.keys(p.increment).length > 0) update.increment = p.increment
+            updates.push(update)
+        }
+
+        if (updates.length > 0) {
+            await callAppsScript('updateInfluencerStatusBatch', {platform, updates})
+        }
+
+        const fresh = await loadState()
+        const batchIds = new Set(batch.map(b => b.id))
+        fresh.queue = fresh.queue.filter(q => !batchIds.has(q.id))
+        for (const it of batch) await deletePayload(it.id)
+        fresh.upsertedAudienceProfiles += updates.length
+        await saveState(fresh)
+        retryDelay = 1000
+        consecutiveFailures = 0
+        return fresh.queue.length > 0
+    } catch (error) {
+        handleProcessError(error)
+        return false
+    }
+}
+
+async function processSingle(state: SyncState): Promise<boolean> {
     const item = state.queue[0]
     try {
         const payload = await getPayload(item.id)
@@ -150,18 +219,18 @@ async function processNext(): Promise<boolean> {
         consecutiveFailures = 0
         return fresh.queue.length > 0
     } catch (error) {
-        consecutiveFailures += 1
-        const msg = error instanceof Error ? error.message : String(error)
-        if (msg.includes('429') || msg.includes('quota')) {
-            retryDelay = 60_000
-        } else {
-            retryDelay = Math.min(retryDelay * 2, 30_000)
-        }
-        if (consecutiveFailures >= 10) {
-            showAlarm('Sheets 同步连续失败 10 次，已暂停', 20_000)
-        }
+        handleProcessError(error)
         return false
     }
+}
+
+async function processNext(): Promise<boolean> {
+    const state = await loadState()
+    if (state.queue.length === 0) return false
+    if (state.queue[0].op === 'updateInfluencerStatus' && state.queue.length >= 2 && state.queue[1].op === 'updateInfluencerStatus') {
+        return processStatusBatch(state)
+    }
+    return processSingle(state)
 }
 
 async function runWorkerCycle(): Promise<void> {

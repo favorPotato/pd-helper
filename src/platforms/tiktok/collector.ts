@@ -12,6 +12,7 @@ import {
 } from '../../shared/archive'
 import {truncateError} from '../../shared/errors'
 import {sleepRandom} from '../../shared/timing'
+import {enqueueUpsertVideos} from '../../shared/sheets-sync'
 import {Downloader, getDownloadCandidatesFromItem, type DownloadCandidate} from './downloader'
 import type {CommentPageResponse, RequestEnv} from './client'
 import {fetchCommentPage, fetchVideoPage, fetchHtml} from './client'
@@ -24,6 +25,8 @@ export interface CollectFilterOptions {
     minLikeRate: number
     maxDurationSec: number
 }
+
+export type SortType = 'hot' | 'recent'
 
 interface DownloadSummary {
     attempted: number
@@ -489,23 +492,27 @@ async function collectVideos(
     fromTs: number,
     toTs: number,
     filters: CollectFilterOptions,
-    onLog?: CollectLogFn
+    onLog?: CollectLogFn,
+    excludeVideoIds?: Set<string>,
+    sortType: SortType = 'recent'
 ): Promise<{ videos: CollectedVideo[] }> {
     const videos: CollectedVideo[] = []
-    const seenVideoIds = new Set<string>()
+    const seenVideoIds = excludeVideoIds ?? new Set<string>()
     let cursor = 0
     let page = 0
 
     while (videos.length < maxVideoCount) {
         page += 1
         await emitCollectLog(onLog, `拉取视频列表第 ${page} 页...`)
-        const pageResult = await fetchVideoPage(secUid, cursor, requestEnv, profileUrl)
+        const pageResult = await fetchVideoPage(secUid, cursor, requestEnv, profileUrl, sortType === 'hot')
         const items = pageResult.items
         if (items.length === 0) break
 
+        let pageAllBeforeFromTs = sortType === 'recent' && items.length > 0
+
         for (const item of items) {
             const obj = asObject(item)
-            if (!obj) continue
+            if (!obj) { pageAllBeforeFromTs = false; continue }
             if (obj.isAd === true) continue
 
             const videoId = String(obj.id || '')
@@ -513,6 +520,8 @@ async function collectVideos(
             if (seenVideoIds.has(videoId)) continue
 
             const createAt = toNumber(obj.createTime)
+            const createMs = createAt > 0 ? createAt * 1000 : 0
+            if (createMs === 0 || createMs >= fromTs) pageAllBeforeFromTs = false
             if (!isVideoInDateRange(createAt, fromTs, toTs)) continue
 
             const stats = extractStats(obj)
@@ -568,6 +577,10 @@ async function collectVideos(
             await sleepRandom(800, 1500)
         }
 
+        if (pageAllBeforeFromTs) {
+            await emitCollectLog(onLog, '当前页所有视频已早于起始日期，提前结束翻页')
+            break
+        }
         if (!pageResult.hasMore) break
         const nextCursor = pageResult.cursor
         if (!Number.isFinite(nextCursor) || nextCursor <= cursor) break
@@ -643,7 +656,9 @@ export class Collector {
         onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
         onDownloadFailed?: (videoId: string) => void,
         filenamePrefix?: string,
-        onLog?: CollectLogFn
+        onLog?: CollectLogFn,
+        excludeVideoIds?: Set<string>,
+        sortType: SortType = 'recent'
     ): Promise<{
         filename: string;
         output: TikTokProfileCollection
@@ -653,7 +668,7 @@ export class Collector {
 
         const fromDate = new Date(fromTs).toISOString().slice(0, 10)
         const toDate = new Date(toTs).toISOString().slice(0, 10)
-        await emitCollectLog(onLog, `开始筛选 ${fromDate} ~ ${toDate} 视频...`)
+        await emitCollectLog(onLog, `开始筛选 ${fromDate} ~ ${toDate} 视频（${sortType === 'hot' ? '热度' : '时间'}排序）...`)
         const {videos} = await collectVideos(
             resolvedUsername,
             user.userId,
@@ -664,7 +679,9 @@ export class Collector {
             fromTs,
             toTs,
             filters,
-            onLog
+            onLog,
+            excludeVideoIds,
+            sortType
         )
         if (videos.length === 0) {
             throw new Error('当前博主没有符合要求的视频')
@@ -691,6 +708,15 @@ export class Collector {
         ])
         await downloadBlob(filename, archiveBlob)
         await emitCollectLog(onLog, `归档已生成: ${filename}`)
+
+        if (outputVideos.length > 0) {
+            const videoRows = outputVideos.map(v => ({
+                videoId: v.videoId,
+                videoJson: JSON.stringify(v)
+            }))
+            await enqueueUpsertVideos('tiktok', videoRows)
+        }
+
         return {
             filename,
             output,
@@ -723,7 +749,9 @@ export class Collector {
         onDownloadProgress?: (downloadedCount: number, selectedCount: number, targetCount: number) => void,
         onDownloadFailed?: (videoId: string) => void,
         filenamePrefix?: string,
-        onLog?: CollectLogFn
+        onLog?: CollectLogFn,
+        excludeVideoIds?: Set<string>,
+        sortType: SortType = 'recent'
     ): Promise<{
         filename: string;
         output: TikTokProfileCollection
@@ -744,7 +772,9 @@ export class Collector {
             onDownloadProgress,
             onDownloadFailed,
             filenamePrefix,
-            onLog
+            onLog,
+            excludeVideoIds,
+            sortType
         )
     }
 

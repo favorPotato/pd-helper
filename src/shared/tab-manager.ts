@@ -12,6 +12,7 @@ export interface EnsureTabReadyOptions {
     readySelector?: string
     returnToTabId?: number
     selectorTimeoutMs?: number
+    targetUrl?: string
 }
 
 export const IG_TAB: TabTarget = {
@@ -47,14 +48,14 @@ async function queryTabSelector(tabId: number, selector: string): Promise<boolea
     return result.some((entry) => entry.result === true)
 }
 
-async function getOrCreateTab(target: TabTarget): Promise<chrome.tabs.Tab> {
+async function getOrCreateTab(target: TabTarget, targetUrl?: string): Promise<chrome.tabs.Tab> {
     const tabs = await chrome.tabs.query({url: target.urlPattern})
     if (tabs.length > 0) {
         return tabs[0]
     }
 
     return await chrome.tabs.create({
-        url: target.createUrl,
+        url: targetUrl || target.createUrl,
         active: false
     })
 }
@@ -108,7 +109,7 @@ async function ensureContentScript(tabId: number): Promise<void> {
 
 export async function ensureTabReady(target: TabTarget, options: EnsureTabReadyOptions = {}): Promise<{ok: true; tab: chrome.tabs.Tab} | {ok: false; reason: string; error: string}> {
     try {
-        const tab = await getOrCreateTab(target)
+        const tab = await getOrCreateTab(target, options.targetUrl)
         if (!tab.id) {
             return {ok: false, reason: 'tab_error', error: 'missing_tab_id'}
         }

@@ -3,6 +3,7 @@ export default {
     name: 'ig_helper',
     version: '0.8.4',
     description: 'instagram 运营助手',
+    incognito: 'split',
     permissions: [
         'scripting',
         'downloads',

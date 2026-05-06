@@ -143,7 +143,7 @@ async function requestScriptApi(request: ScriptApiRequestMessage): Promise<Scrip
     }
 }
 
-async function requestAppsScript(request: AppsScriptRequestMessage): Promise<AppsScriptResponse> {
+async function doAppsScriptFetch(request: AppsScriptRequestMessage): Promise<AppsScriptResponse> {
     if (!APPS_SCRIPT_URL) {
         return {ok: false, status: 0, data: null, error: 'APPS_SCRIPT_URL 未配置'}
     }
@@ -181,6 +181,15 @@ async function requestAppsScript(request: AppsScriptRequestMessage): Promise<App
     }
 }
 
+let appsScriptChain: Promise<unknown> = Promise.resolve()
+
+async function requestAppsScript(request: AppsScriptRequestMessage): Promise<AppsScriptResponse> {
+    const run = (): Promise<AppsScriptResponse> => doAppsScriptFetch(request)
+    const next = appsScriptChain.then(run, run)
+    appsScriptChain = next.catch(() => undefined)
+    return next
+}
+
 function classifyIgTabError(e: unknown): {reason: string; error: string} {
     const raw = e instanceof Error ? e.message : String(e)
     const error = truncateError(raw, 500)
@@ -210,12 +219,13 @@ async function ensureIgTabReady(): Promise<{ok: true; tab: chrome.tabs.Tab} | {o
     return prepared
 }
 
-async function ensureTikTokTabReady(returnToTabId?: number): Promise<{ok: true; tab: chrome.tabs.Tab; href: string} | {ok: false; reason: string; error: string}> {
+async function ensureTikTokTabReady(returnToTabId?: number, targetUrl?: string): Promise<{ok: true; tab: chrome.tabs.Tab; href: string} | {ok: false; reason: string; error: string}> {
     const prepared = await ensureTabReady(TK_TAB, {
         activate: true,
         readySelector: '#app',
         returnToTabId,
-        selectorTimeoutMs: 15000
+        selectorTimeoutMs: 15000,
+        targetUrl
     })
     if (!prepared.ok) {
         return {ok: false, reason: 'tk_tab_error', error: prepared.error}
@@ -359,7 +369,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         ;(async () => {
             try {
                 const state = await idbGetSheetsSyncState()
-                sendResponse({ok: true, state})
+                sendResponse({ok: true, payload: state})
             } catch (error) {
                 sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
             }
@@ -462,7 +472,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.type === PREPARE_TK_TAB) {
         ;(async () => {
-            const prepared = await ensureTikTokTabReady(sender.tab?.id)
+            const targetUrl = typeof request.url === 'string' ? request.url : undefined
+            const prepared = await ensureTikTokTabReady(sender.tab?.id, targetUrl)
             if (!prepared.ok) {
                 sendResponse({ok: false, reason: prepared.reason, error: prepared.error})
                 return
@@ -580,7 +591,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     maxDurationSec: request.maxDurationSec,
                     startYear: request.startYear,
                     endYear: request.endYear,
-                    filenamePrefix: request.filenamePrefix
+                    filenamePrefix: request.filenamePrefix,
+                    sortType: request.sortType
                 })
                 sendResponse(result)
             } catch (error) {

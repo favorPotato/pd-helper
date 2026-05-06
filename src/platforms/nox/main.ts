@@ -1,4 +1,5 @@
 import {showDialog} from '../../shared/custom-dialog'
+import {TK_BATCH_COLLECT_FIELDS} from '../../shared/tk-collect-fields'
 import {truncateError} from '../../shared/errors'
 import {safeSendMessage} from '../../shared/messaging'
 import {
@@ -12,6 +13,10 @@ import {
 } from '../../shared/remote-collect'
 import {sleepRandom} from '../../shared/timing'
 import {enqueueUpdateStatus, enqueueUpsertInfluencers} from '../../shared/sheets-sync'
+import {
+    runTkBatchCollect,
+    type CollectExecutor
+} from '../../shared/tk-batch-collect'
 import {checkAppsScriptHealth} from '../../shared/apps-script-client'
 import {callAppsScript} from '../../shared/apps-script-client'
 import {fetchAudienceProfile} from './client'
@@ -33,7 +38,6 @@ let audienceCollectInProgress = false
 let tkCollectInProgress = false
 let autoCollectPaused = false
 
-const NO_QUALIFYING_VIDEO_ERROR = '当前博主没有符合要求的视频'
 
 function initNoxMessageHandler(): void {
     if (window.__NOX_MESSAGE_HANDLER_LOADED__) return
@@ -207,203 +211,111 @@ async function collectFromTikTokPool(): Promise<void> {
 
     const params = await showDialog({
         title: 'TK采集设置',
-        fields: [
-            {key: 'batchSize', label: '采集博主数', type: 'number', value: 500, min: 1},
-            {key: 'videoCount', label: '每博主视频数', type: 'number', value: 20, min: 1},
-            {key: 'minLikeRate', label: '最低点赞率 (0~1)', type: 'number', value: 0.02, step: 0.01, min: 0, max: 1, group: '过滤条件'},
-            {key: 'maxDurationSec', label: '最长视频时长（秒）', type: 'number', value: 60, step: 1, min: 1, group: '过滤条件'},
-            {key: 'startDate', label: '起始日期', type: 'date'},
-            {key: 'endDate', label: '截止日期', type: 'date'}
-        ]
+        fields: TK_BATCH_COLLECT_FIELDS
     })
     if (!params) return
 
     const batchSize = Number(params.batchSize) || 500
     const maxVideoCount = Number(params.videoCount) || 20
+    const sortType: 'hot' | 'recent' = params.sortType === 'hot' ? 'hot' : 'recent'
+    const minLikeRate = Number(params.minLikeRate) || 0.02
+    const maxDurationSec = Number(params.maxDurationSec) || 60
     const todayNox = new Date()
     const defaultFromNox = new Date(todayNox); defaultFromNox.setMonth(defaultFromNox.getMonth() - 3)
     const fromTs = params.startDate ? new Date(params.startDate as string).getTime() : defaultFromNox.getTime()
     const toTs = params.endDate ? new Date(params.endDate as string + 'T23:59:59').getTime() : todayNox.getTime()
 
-    let influencers: NoxInfluencer[]
-    try {
-        const resp = await callAppsScript<{ok: boolean; items: NoxInfluencer[]}>('loadInfluencersByStatus', {
-            platform: 'tiktok',
-            status: 'unused',
-            limit: batchSize
-        })
-        influencers = (resp.items || []).filter(inf => inf.genderTag)
-    } catch (e) {
-        UiHelper.log(`从 Sheets 拉取失败: ${truncateError(e, 200)}`)
-        return
-    }
-
-    if (influencers.length === 0) {
-        UiHelper.log('Sheets 中没有未采博主（或画像未回填）')
-        return
-    }
-
-    UiHelper.log(`从 Sheets 拉取 ${influencers.length} 个未采博主`)
-
     tkCollectInProgress = true
     await UiHelper.setBusyState({tkCollecting: true})
     try {
-        const prepareResult = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB})
-        if (!prepareResult?.ok || !prepareResult.tabId) {
-            UiHelper.log(`TikTok 执行页不可用: ${prepareResult?.error || '未知错误'}`)
-            return
+        let tkTabId = 0
+
+        const ensureTabAt = async (username: string): Promise<void> => {
+            const profileUrl = `https://www.tiktok.com/@${username}`
+            const prepared = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB, url: profileUrl})
+            if (!prepared?.ok || !prepared.tabId) {
+                throw new Error(`TikTok 执行页不可用: ${prepared?.error || '未知错误'}`)
+            }
+            tkTabId = prepared.tabId
+            UiHelper.log(`TikTok 执行页就绪: ${prepared.href || profileUrl}`)
         }
 
-        UiHelper.log(`复用 TikTok 执行页: ${prepareResult.href || '当前站内页'}`)
-        let tkTabId = prepareResult.tabId
-        const succeededChannelIds: string[] = []
-        const noVideoChannelIds: string[] = []
+        const noxExecutor: CollectExecutor = {
+            label: (_progress, inf) => `${inf.genderTag}${buildInfluencerLabel(inf)}`,
+            log: (m) => UiHelper.log(m),
+            collectOne: async (influencer, p) => {
+                if (!tkTabId) {
+                    await ensureTabAt(influencer.username)
+                }
 
-        for (let index = 0; index < influencers.length; index += 1) {
-            const influencer = influencers[index]
-            const progress = `[${index + 1}/${influencers.length}]`
-            const displayName = buildInfluencerLabel(influencer)
-            UiHelper.log(`${progress} ${influencer.genderTag}${displayName} → 使用 TikTok 执行页...`)
-
-            try {
-                UiHelper.log(`${progress} 开始采集 @${influencer.username}...`)
-                let metricsSummary = ''
-                const metricsResult = await safeSendMessage<TkProfileMetricsResponse>({
+                const runMetrics = async () => safeSendMessage<TkProfileMetricsResponse>({
                     type: TK_PROFILE_METRICS_VIA_TAB,
                     tabId: tkTabId,
                     username: influencer.username,
-                    minLikeRate: Number(params.minLikeRate) || 0.02,
-                    maxDurationSec: Number(params.maxDurationSec) || 60,
+                    minLikeRate: p.minLikeRate,
+                    maxDurationSec: p.maxDurationSec,
                 })
-                if (metricsResult?.ok) {
-                    metricsSummary = metricsResult.qualifyingRate != null ? `${(metricsResult.qualifyingRate * 100).toFixed(1)}%` : ''
-                    await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                        qualifyingRate: metricsResult.qualifyingRate,
-                        postRate: metricsResult.postRate ?? '',
-                        updatedAt: new Date().toISOString()
-                    })
-                } else {
+
+                let metricsResult = await runMetrics()
+                if (!metricsResult?.ok) {
                     const errorMsg = metricsResult?.error || '指标预估失败'
                     if (errorMsg.includes('当前博主已关闭评论功能')) {
-                        UiHelper.log(`${progress} ${errorMsg}，跳过`)
-                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                            status: 'failed',
-                            lastError: errorMsg.slice(0, 200),
-                            updatedAt: new Date().toISOString()
-                        })
-                        continue
+                        throw new Error(errorMsg)
                     }
-                    UiHelper.log(`${progress} ${errorMsg}，重建 TK tab 后重试...`)
-                    const resetResult = await safeSendMessage<{ok: boolean; removed?: number; removeFailed?: number; closedTabs?: number; error?: string}>({type: 'reset_tk_tab', tabId: tkTabId})
+                    UiHelper.log(`${errorMsg}，重建 TK tab 后重试...`)
+                    const resetResult = await safeSendMessage<{ok: boolean; closedTabs?: number; removed?: number; removeFailed?: number; error?: string}>({type: 'reset_tk_tab', tabId: tkTabId})
                     if (!resetResult?.ok) {
-                        const resetError = resetResult?.error || 'reset_tk_tab 无响应'
-                        UiHelper.log(`${progress} TK tab 重建失败: ${resetError}`)
-                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                            status: 'failed',
-                            lastError: resetError.slice(0, 200),
-                            updatedAt: new Date().toISOString()
-                        })
-                        continue
+                        throw new Error(`TK tab 重建失败: ${resetResult?.error || 'reset_tk_tab 无响应'}`)
                     }
-                    UiHelper.log(`${progress} TK tab 重建完成: 关闭 ${resetResult.closedTabs || 0} 个 tab，清理 ${resetResult.removed || 0} 个 cookie，失败 ${resetResult.removeFailed || 0}`)
-                    const newTab = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB})
-                    if (!newTab?.ok || !newTab.tabId) {
-                        const tabError = newTab?.error || '新 TK 执行页不可用'
-                        UiHelper.log(`${progress} ${tabError}`)
-                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                            status: 'failed',
-                            lastError: tabError.slice(0, 200),
-                            updatedAt: new Date().toISOString()
-                        })
-                        continue
-                    }
-                    tkTabId = newTab.tabId
-                    UiHelper.log(`${progress} 新 TK 执行页就绪: ${newTab.href || '当前站内页'}`)
-                    const retryResult = await safeSendMessage<TkProfileMetricsResponse>({
-                        type: TK_PROFILE_METRICS_VIA_TAB,
-                        tabId: tkTabId,
-                        username: influencer.username,
-                        minLikeRate: Number(params.minLikeRate) || 0.02,
-                        maxDurationSec: Number(params.maxDurationSec) || 60,
-                    })
-                    if (retryResult?.ok) {
-                        metricsSummary = retryResult.qualifyingRate != null ? `${(retryResult.qualifyingRate * 100).toFixed(1)}%` : ''
-                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                            qualifyingRate: retryResult.qualifyingRate,
-                            postRate: retryResult.postRate ?? '',
-                            updatedAt: new Date().toISOString()
-                        })
-                    } else {
-                        UiHelper.log(`${progress} 重试仍失败，跳过`)
-                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                            status: 'failed',
-                            lastError: (retryResult?.error || errorMsg).slice(0, 200),
-                            updatedAt: new Date().toISOString()
-                        })
-                        continue
+                    UiHelper.log(`TK tab 重建完成: 关闭 ${resetResult.closedTabs || 0} 个 tab，清理 ${resetResult.removed || 0} 个 cookie`)
+                    tkTabId = 0
+                    await ensureTabAt(influencer.username)
+                    metricsResult = await runMetrics()
+                    if (!metricsResult?.ok) {
+                        throw new Error(`指标预估重试仍失败：${metricsResult?.error || errorMsg}`)
                     }
                 }
+
+                const metricsSummary = metricsResult.qualifyingRate != null ? `${(metricsResult.qualifyingRate * 100).toFixed(1)}%` : ''
+                await enqueueUpdateStatus('tiktok', influencer.channelId, {
+                    qualifyingRate: metricsResult.qualifyingRate,
+                    postRate: metricsResult.postRate ?? '',
+                    updatedAt: new Date().toISOString()
+                })
 
                 const collectResult = await safeSendMessage<TkCollectViaTabResponse>({
                     type: TK_COLLECT_VIA_TAB,
                     tabId: tkTabId,
                     username: influencer.username,
-                    maxVideoCount,
-                    fromTs,
-                    toTs,
-                    minLikeRate: Number(params.minLikeRate) || 0.02,
-                    maxDurationSec: Number(params.maxDurationSec) || 60,
+                    maxVideoCount: p.maxVideoCount,
+                    fromTs: p.fromTs,
+                    toTs: p.toTs,
+                    minLikeRate: p.minLikeRate,
+                    maxDurationSec: p.maxDurationSec,
                     filenamePrefix: influencer.genderTag,
+                    sortType: p.sortType,
                 })
 
-                if (collectResult?.ok) {
-                    succeededChannelIds.push(influencer.channelId)
-                    const archivedVideoCount = Number(collectResult.downloadSummary?.succeeded) || 0
-                    UiHelper.log(
-                        `${progress} 完成: ${collectResult.filename || ''} (${metricsSummary ? `合格率 ${metricsSummary}, ` : ''}下载 ${collectResult.downloadSummary?.succeeded || 0}/${collectResult.downloadSummary?.attempted || 0})`
-                    )
-                    await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                        status: 'used',
-                        archivedVideoCount,
-                        lastError: '',
-                        updatedAt: new Date().toISOString()
-                    })
-                } else {
-                    const errorMsg = collectResult?.error || '未知错误'
-                    UiHelper.log(`${progress} 采集失败: ${errorMsg}`)
-                    if (errorMsg === NO_QUALIFYING_VIDEO_ERROR) {
-                        noVideoChannelIds.push(influencer.channelId)
-                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                            status: 'used',
-                            archivedVideoCount: 0,
-                            lastError: '',
-                            updatedAt: new Date().toISOString()
-                        })
-                    } else {
-                        await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                            status: 'failed',
-                            lastError: errorMsg.slice(0, 200),
-                            updatedAt: new Date().toISOString()
-                        })
-                    }
+                if (!collectResult?.ok) {
+                    throw new Error(collectResult?.error || '采集失败')
                 }
-            } catch (error) {
-                const errorMsg = truncateError(error, 200)
-                UiHelper.log(`${progress} 异常: ${errorMsg}`)
-                await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                    status: 'failed',
-                    lastError: errorMsg,
-                    updatedAt: new Date().toISOString()
-                })
-            }
-
-            if (index < influencers.length - 1) {
-                UiHelper.log('等待中...')
-                await sleepRandom(5000, 8000)
+                if (metricsSummary) UiHelper.log(`合格率 ${metricsSummary}`)
+                return {
+                    filename: collectResult.filename,
+                    downloadSummary: collectResult.downloadSummary || {succeeded: 0, attempted: 0, failed: 0}
+                }
             }
         }
 
-        UiHelper.log(`TK采集结束：成功 ${succeededChannelIds.length}，无视频 ${noVideoChannelIds.length}，共处理 ${influencers.length} 个博主`)
+        await runTkBatchCollect(noxExecutor, {
+            batchSize,
+            fromTs,
+            toTs,
+            minLikeRate,
+            maxDurationSec,
+            sortType,
+            maxVideoCount
+        })
     } catch (error) {
         UiHelper.log(`批量采集异常: ${truncateError(error, 300)}`)
     } finally {
