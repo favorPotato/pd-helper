@@ -20,10 +20,10 @@ var INFLUENCER_KEYS = [
   'lastError', 'extraData', 'createdAt', 'updatedAt'
 ];
 
-var VIDEO_HEADERS = ['视频ID', '视频数据'];
+var VIDEO_HEADERS = ['视频ID'];
 var NOX_PAGE_HEADERS = ['URL', '页码', '备注'];
 
-var CLAIM_BATCH_LIMIT = 5;
+var CLAIM_BATCH_LIMIT = 200;
 var USING_RECYCLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 function doPost(e) {
@@ -374,7 +374,6 @@ function upsertVideos_(payload) {
   var sheet = getVideoSheet_(platform);
   var headerMap = getHeaderMap_(sheet);
   var videoIdCol = headerMap['视频ID'];
-  var videoJsonCol = headerMap['视频数据'];
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
   var existingIds = {};
@@ -396,10 +395,8 @@ function upsertVideos_(payload) {
       skipped++;
       continue;
     }
-    var jsonStr = typeof vid.videoJson === 'string' ? vid.videoJson : JSON.stringify(vid);
     var row = new Array(lastCol).fill('');
     row[videoIdCol] = videoId;
-    row[videoJsonCol] = jsonStr;
     newRows.push(row);
     existingIds[videoId] = true;
   }
@@ -450,19 +447,24 @@ function getNoxPage_(payload) {
 
 function getCollectedVideoIds_(payload) {
   var platform = payload.platform || 'tiktok';
+  var sinceRow = Number(payload.sinceRow) || 0;
   var sheet = getVideoSheet_(platform);
   var headerMap = getHeaderMap_(sheet);
   var videoIdCol = headerMap['视频ID'];
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return { ok: true, ids: [] };
+  if (lastRow < 2) return { ok: true, ids: [], cursor: 1 };
 
-  var idVals = sheet.getRange(2, videoIdCol + 1, lastRow - 1, 1).getValues();
+  var startRow = Math.max(2, sinceRow + 1);
+  if (startRow > lastRow) return { ok: true, ids: [], cursor: lastRow };
+
+  var count = lastRow - startRow + 1;
+  var idVals = sheet.getRange(startRow, videoIdCol + 1, count, 1).getValues();
   var ids = [];
   for (var r = 0; r < idVals.length; r++) {
     if (idVals[r][0]) ids.push(String(idVals[r][0]));
   }
 
-  return { ok: true, ids: ids };
+  return { ok: true, ids: ids, cursor: lastRow };
 }
 
 function claimUnusedBatch_(payload) {
@@ -497,30 +499,25 @@ function claimUnusedBatch_(payload) {
   var maxR = targetRows[targetRows.length - 1];
   var spanSize = maxR - minR + 1;
 
-  if (spanSize <= 100) {
-    var span = sheet.getRange(minR, 1, spanSize, lastCol).getValues();
-    for (var i = 0; i < targetRows.length; i++) {
-      var rn = targetRows[i];
-      var rowData = span[rn - minR].slice();
-      rowData[statusCol] = 'using';
-      rowData[updatedAtCol] = nowIso;
-      items.push(buildInfluencerItemFromRow_(rowData, headerMap));
-    }
-  } else {
-    for (var i = 0; i < targetRows.length; i++) {
-      var rn = targetRows[i];
-      var rowData = sheet.getRange(rn, 1, 1, lastCol).getValues()[0];
-      rowData[statusCol] = 'using';
-      rowData[updatedAtCol] = nowIso;
-      items.push(buildInfluencerItemFromRow_(rowData, headerMap));
-    }
+  // 一次性读 span，构造 items + 在内存中标记 using/updatedAt
+  var span = sheet.getRange(minR, 1, spanSize, lastCol).getValues();
+  for (var i = 0; i < targetRows.length; i++) {
+    var rn = targetRows[i];
+    var rowData = span[rn - minR];
+    rowData[statusCol] = 'using';
+    rowData[updatedAtCol] = nowIso;
+    items.push(buildInfluencerItemFromRow_(rowData, headerMap));
   }
 
-  for (var j = 0; j < targetRows.length; j++) {
-    var rnW = targetRows[j];
-    sheet.getRange(rnW, statusCol + 1).setValue('using');
-    sheet.getRange(rnW, updatedAtCol + 1).setValue(nowIso);
+  // 只写两列，整列一次性 setValues（API call 数从 N×2 降到 2）
+  var statusGrid = new Array(spanSize);
+  var updatedGrid = new Array(spanSize);
+  for (var s = 0; s < spanSize; s++) {
+    statusGrid[s] = [span[s][statusCol]];
+    updatedGrid[s] = [span[s][updatedAtCol]];
   }
+  sheet.getRange(minR, statusCol + 1, spanSize, 1).setValues(statusGrid);
+  sheet.getRange(minR, updatedAtCol + 1, spanSize, 1).setValues(updatedGrid);
 
   return { ok: true, items: items, claimed: items.length, recycled: 0 };
 }

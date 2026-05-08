@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun build.js"
+    "build": "bun scripts/build.js"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.34",

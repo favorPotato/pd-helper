@@ -43,11 +43,6 @@ export interface DownloadMessage {
     filename: string
 }
 
-export interface NoxSearchRequestMessage {
-    type: 'nox_search_request'
-    url: string
-}
-
 export interface NoxSearchResponse {
     ok: boolean
     status: number

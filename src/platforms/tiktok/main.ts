@@ -31,7 +31,7 @@ declare const window: Window & {
 
 async function loadCollectedVideoIdSet(): Promise<Set<string>> {
     try {
-        const resp = await callAppsScript<{ ok: boolean; ids?: string[] }>('getCollectedVideoIds', {platform: 'tiktok'})
+        const resp = await chrome.runtime.sendMessage({type: 'get_collected_video_ids', platform: 'tiktok'}) as {ok?: boolean; ids?: string[]} | undefined
         const ids = Array.isArray(resp?.ids) ? resp.ids : []
         return new Set(ids.map(id => String(id)))
     } catch (error) {
@@ -233,14 +233,14 @@ async function collectProfile(): Promise<void> {
     })
     if (!params) return
 
-    const maxVideoCount = Number(params.videoCount) || 20
+    const maxVideoCount = Number(params.videoCount) || 50
     const sortType: SortType = params.sortType === 'hot' ? 'hot' : 'recent'
     const filters: CollectFilterOptions = {
         minLikeRate: Number(params.minLikeRate) || 0.02,
         maxDurationSec: Number(params.maxDurationSec) || 60
     }
     const today = new Date()
-    const defaultFrom = new Date(today); defaultFrom.setMonth(defaultFrom.getMonth() - 3)
+    const defaultFrom = new Date(today.getFullYear(), 0, 1)
     const fromTs = params.startDate ? new Date(params.startDate as string).getTime() : defaultFrom.getTime()
     const toTs = params.endDate ? new Date(params.endDate as string + 'T23:59:59').getTime() : today.getTime()
 
@@ -371,12 +371,12 @@ async function batchCollectFromPool(): Promise<void> {
     if (!params) return
 
     const batchSize = Number(params.batchSize) || 500
-    const maxVideoCount = Number(params.videoCount) || 20
+    const maxVideoCount = Number(params.videoCount) || 50
     const sortType: SortType = params.sortType === 'hot' ? 'hot' : 'recent'
     const minLikeRate = Number(params.minLikeRate) || 0.02
     const maxDurationSec = Number(params.maxDurationSec) || 60
     const today2 = new Date()
-    const defaultFrom2 = new Date(today2); defaultFrom2.setMonth(defaultFrom2.getMonth() - 3)
+    const defaultFrom2 = new Date(today2.getFullYear(), 0, 1)
     const fromTs = params.startDate ? new Date(params.startDate as string).getTime() : defaultFrom2.getTime()
     const toTs = params.endDate ? new Date(params.endDate as string + 'T23:59:59').getTime() : today2.getTime()
 

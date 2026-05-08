@@ -710,10 +710,7 @@ export class Collector {
         await emitCollectLog(onLog, `归档已生成: ${filename}`)
 
         if (outputVideos.length > 0) {
-            const videoRows = outputVideos.map(v => ({
-                videoId: v.videoId,
-                videoJson: JSON.stringify(v)
-            }))
+            const videoRows = outputVideos.map(v => ({videoId: v.videoId}))
             await enqueueUpsertVideos('tiktok', videoRows)
         }
 

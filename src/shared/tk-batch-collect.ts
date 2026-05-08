@@ -1,8 +1,17 @@
 import {callAppsScript} from './apps-script-client'
+import {
+    idbGetLastClaimAt,
+    idbPutLastClaimAt,
+    idbTkClaimQueueDelete,
+    idbTkClaimQueueGetAll,
+    idbTkClaimQueuePushBatch
+} from './idb'
 import {enqueueUpdateStatus} from './sheets-sync'
-import {sleepRandom} from './timing'
+import {delay, sleepRandom} from './timing'
 import {truncateError} from './errors'
 import type {NoxInfluencer} from '../platforms/nox/types'
+
+const CLAIM_THROTTLE_MS = 60_000
 
 export const NO_QUALIFYING_VIDEO_ERROR = '当前博主没有符合要求的视频'
 
@@ -45,8 +54,9 @@ export async function syncTkCollectSuccess(channelId: string, succeeded: number)
     await enqueueUpdateStatus('tiktok', channelId, {
         status: 'used',
         lastError: '',
+        archivedVideoCount: succeeded,
         updatedAt: new Date().toISOString()
-    }, {archivedVideoCount: succeeded})
+    })
 }
 
 async function writeNoVideo(channelId: string): Promise<void> {
@@ -65,6 +75,45 @@ async function writeFailed(channelId: string, errorMsg: string): Promise<void> {
     })
 }
 
+async function loadPendingClaim(): Promise<NoxInfluencer[]> {
+    const items = await idbTkClaimQueueGetAll<NoxInfluencer>()
+    return items.filter(it => it && typeof it === 'object' && typeof (it as NoxInfluencer).channelId === 'string')
+}
+
+async function refillClaimQueue(executor: CollectExecutor, limit: number): Promise<NoxInfluencer[]> {
+    const lastClaimAt = await idbGetLastClaimAt()
+    if (typeof lastClaimAt === 'number') {
+        const elapsed = Date.now() - lastClaimAt
+        if (elapsed < CLAIM_THROTTLE_MS) {
+            const wait = CLAIM_THROTTLE_MS - elapsed
+            executor.log(`claim 节流冷却 ${Math.ceil(wait / 1000)}s ...`)
+            await delay(wait)
+        }
+    }
+
+    let claimResp: ClaimResp
+    try {
+        claimResp = await callAppsScript<ClaimResp>('claimUnusedBatch', {
+            platform: 'tiktok',
+            limit
+        })
+    } catch (e) {
+        executor.log(`claim 失败: ${truncateError(e, 200)}`)
+        return []
+    }
+    await idbPutLastClaimAt(Date.now())
+
+    const claimed = claimResp.items || []
+    if (claimed.length === 0) return []
+
+    if (claimResp.recycled && claimResp.recycled > 0) {
+        executor.log(`回收超时 using 博主 ${claimResp.recycled} 个`)
+    }
+
+    await idbTkClaimQueuePushBatch(claimed.map(inf => ({key: inf.channelId, value: inf})))
+    return claimed
+}
+
 export async function runTkBatchCollect(
     executor: CollectExecutor,
     params: BatchCollectParams
@@ -76,30 +125,25 @@ export async function runTkBatchCollect(
     let noVideoCount = 0
     let failedCount = 0
 
+    const residual = await loadPendingClaim()
+    if (residual.length > 0) {
+        executor.log(`检测到 IDB 残留 ${residual.length} 个未处理博主，先恢复消化`)
+    }
+
     while (processedCount < batchSize && !stopRequested) {
-        const remaining = batchSize - processedCount
-        let claimResp: ClaimResp
-        try {
-            claimResp = await callAppsScript<ClaimResp>('claimUnusedBatch', {
-                platform: 'tiktok',
-                limit: remaining
-            })
-        } catch (e) {
-            executor.log(`claim 失败: ${truncateError(e, 200)}`)
-            break
+        let pending = await loadPendingClaim()
+        if (pending.length === 0) {
+            const remaining = batchSize - processedCount
+            pending = await refillClaimQueue(executor, remaining)
+            if (pending.length === 0) {
+                executor.log('Sheets 中没有更多 unused 博主，提前结束')
+                break
+            }
         }
 
-        const claimed = claimResp.items || []
-        if (claimed.length === 0) {
-            executor.log('Sheets 中没有更多 unused 博主，提前结束')
-            break
-        }
-        if (claimResp.recycled && claimResp.recycled > 0) {
-            executor.log(`回收超时 using 博主 ${claimResp.recycled} 个`)
-        }
-
-        for (let i = 0; i < claimed.length; i += 1) {
-            const influencer = claimed[i]
+        for (let i = 0; i < pending.length; i += 1) {
+            if (processedCount >= batchSize || stopRequested) break
+            const influencer = pending[i]
             processedCount += 1
             const progress = `[${processedCount}/${batchSize}]`
             const labelText = executor.label(progress, influencer)
@@ -110,6 +154,7 @@ export async function runTkBatchCollect(
                 await syncTkCollectSuccess(influencer.channelId, result.downloadSummary.succeeded)
                 succeededCount += 1
                 executor.log(`${progress} 完成: ${result.filename || ''} (下载 ${result.downloadSummary.succeeded}/${result.downloadSummary.attempted})`)
+                await idbTkClaimQueueDelete(influencer.channelId)
             } catch (error) {
                 const msg = error instanceof Error ? error.message : String(error)
 
@@ -117,16 +162,19 @@ export async function runTkBatchCollect(
                     executor.log(`${progress} ${msg}，已标记为已采集`)
                     await writeNoVideo(influencer.channelId)
                     noVideoCount += 1
+                    await idbTkClaimQueueDelete(influencer.channelId)
                 } else if (error instanceof BatchAbortError || (error instanceof Error && error.name === 'BatchAbortError')) {
                     executor.log(`${progress} 整批中止：${msg}`)
                     await writeFailed(influencer.channelId, msg)
                     failedCount += 1
+                    await idbTkClaimQueueDelete(influencer.channelId)
                     stopRequested = true
                     break
                 } else {
                     executor.log(`${progress} 采集失败: ${truncateError(msg, 200)}`)
                     await writeFailed(influencer.channelId, msg)
                     failedCount += 1
+                    await idbTkClaimQueueDelete(influencer.channelId)
                 }
             }
 

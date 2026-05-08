@@ -33,10 +33,6 @@ async function requestPayloadStore<T>(message: Record<string, unknown>): Promise
     return response.payload
 }
 
-async function putPayload(id: number, payload: unknown): Promise<void> {
-    await requestPayloadStore({type: 'sheets_sync_payload_put', id, payload})
-}
-
 async function getPayload(id: number): Promise<unknown | undefined> {
     return requestPayloadStore({type: 'sheets_sync_payload_get', id})
 }
@@ -91,13 +87,22 @@ async function saveState(state: SyncState): Promise<void> {
     await saveQueueState(state)
 }
 
+async function atomicEnqueue(id: number, payload: unknown, state: SyncState): Promise<void> {
+    const response = await chrome.runtime.sendMessage({
+        type: 'sheets_sync_atomic_enqueue',
+        id,
+        payload,
+        state
+    }) as {ok?: boolean; error?: string} | undefined
+    if (!response?.ok) throw new Error(response?.error || 'sheets_sync_atomic_enqueue_failed')
+}
+
 async function enqueue(item: Omit<QueueItem, 'id'> & {payload: unknown}): Promise<void> {
     const state = await loadState()
     const newItem: QueueItem = {id: state.nextId, op: item.op}
     state.nextId += 1
-    await putPayload(newItem.id, item.payload)
     state.queue.push(newItem)
-    await saveState(state)
+    await atomicEnqueue(newItem.id, item.payload, state)
     checkWatermark(state.queue.length)
     if (workerStarted) scheduleWorker(0)
 }
@@ -197,6 +202,48 @@ async function processStatusBatch(state: SyncState): Promise<boolean> {
     }
 }
 
+async function processVideoBatch(state: SyncState): Promise<boolean> {
+    const batch: QueueItem[] = []
+    const collected: Array<{platform: string; videos: unknown[]}> = []
+    let firstPlatform: string | null = null
+
+    for (let i = 0; i < state.queue.length && batch.length < BATCH_MAX; i++) {
+        const it = state.queue[i]
+        if (it.op !== 'upsertVideos') break
+        const p = await getPayload(it.id) as {platform?: string; videos?: unknown[]} | undefined
+        if (!p || !Array.isArray(p.videos)) break
+        const platform = String(p.platform || 'tiktok')
+        if (firstPlatform === null) firstPlatform = platform
+        else if (platform !== firstPlatform) break
+        batch.push(it)
+        collected.push({platform, videos: p.videos})
+    }
+    if (batch.length < 2 || !firstPlatform) return false
+
+    try {
+        const allVideos: unknown[] = []
+        for (const c of collected) {
+            for (const v of c.videos) allVideos.push(v)
+        }
+
+        if (allVideos.length > 0) {
+            await callAppsScript('upsertVideos', {platform: firstPlatform, videos: allVideos})
+        }
+
+        const fresh = await loadState()
+        const batchIds = new Set(batch.map(b => b.id))
+        fresh.queue = fresh.queue.filter(q => !batchIds.has(q.id))
+        for (const it of batch) await deletePayload(it.id)
+        await saveState(fresh)
+        retryDelay = 1000
+        consecutiveFailures = 0
+        return fresh.queue.length > 0
+    } catch (error) {
+        handleProcessError(error)
+        return false
+    }
+}
+
 async function processSingle(state: SyncState): Promise<boolean> {
     const item = state.queue[0]
     try {
@@ -227,8 +274,12 @@ async function processSingle(state: SyncState): Promise<boolean> {
 async function processNext(): Promise<boolean> {
     const state = await loadState()
     if (state.queue.length === 0) return false
-    if (state.queue[0].op === 'updateInfluencerStatus' && state.queue.length >= 2 && state.queue[1].op === 'updateInfluencerStatus') {
+    const head = state.queue[0]
+    if (head.op === 'updateInfluencerStatus' && state.queue.length >= 2 && state.queue[1].op === 'updateInfluencerStatus') {
         return processStatusBatch(state)
+    }
+    if (head.op === 'upsertVideos' && state.queue.length >= 2 && state.queue[1].op === 'upsertVideos') {
+        return processVideoBatch(state)
     }
     return processSingle(state)
 }

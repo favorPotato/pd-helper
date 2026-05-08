@@ -1,6 +1,6 @@
 import {build} from 'esbuild'
 import {mkdirSync, readFileSync, writeFileSync} from 'fs'
-import manifest from './src/manifest.js'
+import manifest from '../src/manifest.js'
 
 mkdirSync('dist', {recursive: true})
 

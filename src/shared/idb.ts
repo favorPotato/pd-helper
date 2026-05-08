@@ -1,9 +1,14 @@
 const IDB_NAME = 'tiktok_ig_bridge_cache'
-const IDB_VERSION = 3
+const IDB_VERSION = 5
 const VIDEO_STORE = 'videos'
 const SHEETS_SYNC_STORE = 'sheets_sync_payloads'
 const SHEETS_SYNC_STATE_STORE = 'sheets_sync_state'
+const COLLECTED_VIDEO_IDS_STORE = 'collected_video_ids'
+const TK_CLAIM_QUEUE_STORE = 'tk_claim_queue'
+const TK_CLAIM_META_STORE = 'tk_claim_meta'
 const SHEETS_SYNC_STATE_KEY = 'current'
+const TK_CLAIM_META_LAST_AT_KEY = 'last_claim_at'
+const COLLECTED_VIDEO_IDS_META_SUFFIX = ':meta'
 export const IDB_KEY = 'current'
 
 export interface VideoMeta {
@@ -51,8 +56,47 @@ function openIdb(): Promise<IDBDatabase> {
             if (!db.objectStoreNames.contains(SHEETS_SYNC_STATE_STORE)) {
                 db.createObjectStore(SHEETS_SYNC_STATE_STORE)
             }
+            if (!db.objectStoreNames.contains(COLLECTED_VIDEO_IDS_STORE)) {
+                db.createObjectStore(COLLECTED_VIDEO_IDS_STORE)
+            }
+            if (!db.objectStoreNames.contains(TK_CLAIM_QUEUE_STORE)) {
+                db.createObjectStore(TK_CLAIM_QUEUE_STORE)
+            }
+            if (!db.objectStoreNames.contains(TK_CLAIM_META_STORE)) {
+                db.createObjectStore(TK_CLAIM_META_STORE)
+            }
         }
     })
+}
+
+function idbStoreGetAllValues<T>(storeName: string): Promise<T[]> {
+    return openIdb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readonly')
+        const store = tx.objectStore(storeName)
+        const req = store.getAll()
+        req.onerror = () => reject(new Error('IndexedDB getAll failed'))
+        req.onsuccess = () => resolve(req.result as T[])
+    }))
+}
+
+function idbStoreCount(storeName: string): Promise<number> {
+    return openIdb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readonly')
+        const store = tx.objectStore(storeName)
+        const req = store.count()
+        req.onerror = () => reject(new Error('IndexedDB count failed'))
+        req.onsuccess = () => resolve(req.result)
+    }))
+}
+
+function idbStoreClear(storeName: string): Promise<void> {
+    return openIdb().then(db => new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite')
+        const store = tx.objectStore(storeName)
+        const req = store.clear()
+        req.onerror = () => reject(new Error('IndexedDB clear failed'))
+        req.onsuccess = () => resolve()
+    }))
 }
 
 function idbStoreGet<T>(storeName: string, key: IDBValidKey): Promise<T | undefined> {
@@ -115,6 +159,71 @@ export async function idbGetSheetsSyncState<T = unknown>(): Promise<T | undefine
 
 export async function idbPutSheetsSyncState(state: unknown): Promise<void> {
     await idbStorePut(SHEETS_SYNC_STATE_STORE, SHEETS_SYNC_STATE_KEY, state)
+}
+
+export async function idbAtomicEnqueueSheetsSync(id: number, payload: unknown, state: unknown): Promise<void> {
+    const db = await openIdb()
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction([SHEETS_SYNC_STORE, SHEETS_SYNC_STATE_STORE], 'readwrite')
+        tx.objectStore(SHEETS_SYNC_STORE).put(payload, id)
+        tx.objectStore(SHEETS_SYNC_STATE_STORE).put(state, SHEETS_SYNC_STATE_KEY)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(new Error('IndexedDB atomic enqueue failed'))
+        tx.onabort = () => reject(new Error('IndexedDB atomic enqueue aborted'))
+    })
+}
+
+export async function idbGetCollectedVideoIds(platform: string): Promise<string[] | undefined> {
+    return idbStoreGet<string[]>(COLLECTED_VIDEO_IDS_STORE, platform)
+}
+
+export async function idbPutCollectedVideoIds(platform: string, ids: string[]): Promise<void> {
+    await idbStorePut(COLLECTED_VIDEO_IDS_STORE, platform, ids)
+}
+
+export async function idbGetCollectedVideoIdsLastSync(platform: string): Promise<number | undefined> {
+    return idbStoreGet<number>(COLLECTED_VIDEO_IDS_STORE, platform + COLLECTED_VIDEO_IDS_META_SUFFIX)
+}
+
+export async function idbPutCollectedVideoIdsLastSync(platform: string, ts: number): Promise<void> {
+    await idbStorePut(COLLECTED_VIDEO_IDS_STORE, platform + COLLECTED_VIDEO_IDS_META_SUFFIX, ts)
+}
+
+export async function idbTkClaimQueuePushBatch<T>(items: Array<{key: string; value: T}>): Promise<void> {
+    if (items.length === 0) return
+    const db = await openIdb()
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(TK_CLAIM_QUEUE_STORE, 'readwrite')
+        const store = tx.objectStore(TK_CLAIM_QUEUE_STORE)
+        for (const it of items) store.put(it.value, it.key)
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(new Error('IndexedDB tk_claim_queue push failed'))
+        tx.onabort = () => reject(new Error('IndexedDB tk_claim_queue push aborted'))
+    })
+}
+
+export async function idbTkClaimQueueGetAll<T>(): Promise<T[]> {
+    return idbStoreGetAllValues<T>(TK_CLAIM_QUEUE_STORE)
+}
+
+export async function idbTkClaimQueueDelete(key: string): Promise<void> {
+    await idbStoreDelete(TK_CLAIM_QUEUE_STORE, key)
+}
+
+export async function idbTkClaimQueueCount(): Promise<number> {
+    return idbStoreCount(TK_CLAIM_QUEUE_STORE)
+}
+
+export async function idbTkClaimQueueClear(): Promise<void> {
+    await idbStoreClear(TK_CLAIM_QUEUE_STORE)
+}
+
+export async function idbGetLastClaimAt(): Promise<number | undefined> {
+    return idbStoreGet<number>(TK_CLAIM_META_STORE, TK_CLAIM_META_LAST_AT_KEY)
+}
+
+export async function idbPutLastClaimAt(ts: number): Promise<void> {
+    await idbStorePut(TK_CLAIM_META_STORE, TK_CLAIM_META_LAST_AT_KEY, ts)
 }
 
 export async function clearStaleCache(): Promise<void> {

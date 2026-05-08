@@ -44,7 +44,14 @@ export function createTextArchiveFile(filename: string, text: string): ArchiveFi
 export async function downloadBlob(filename: string, blob: Blob): Promise<void> {
     const url = URL.createObjectURL(blob)
     try {
-        await chrome.runtime.sendMessage({action: 'download', url, filename})
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        a.rel = 'noopener'
+        a.style.display = 'none'
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
     } finally {
         setTimeout(() => URL.revokeObjectURL(url), 15000)
     }

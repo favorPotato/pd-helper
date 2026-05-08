@@ -1,11 +1,16 @@
-import type {AppsScriptRequestMessage, AppsScriptResponse, DownloadMessage, NoxSearchRequestMessage, ScriptApiRequestMessage, ScriptApiResponse} from '../types'
+import type {AppsScriptRequestMessage, AppsScriptResponse, DownloadMessage, ScriptApiRequestMessage, ScriptApiResponse} from '../types'
 import {
+    idbAtomicEnqueueSheetsSync,
     idbDelete,
     idbDeleteSheetsSyncPayload,
     idbGet,
+    idbGetCollectedVideoIds,
+    idbGetCollectedVideoIdsLastSync,
     idbGetSheetsSyncPayload,
     idbGetSheetsSyncState,
     idbPut,
+    idbPutCollectedVideoIds,
+    idbPutCollectedVideoIdsLastSync,
     idbPutSheetsSyncPayload,
     idbPutSheetsSyncState,
     IDB_KEY,
@@ -190,6 +195,123 @@ async function requestAppsScript(request: AppsScriptRequestMessage): Promise<App
     return next
 }
 
+const collectedVideoIdCache: Record<string, Set<string>> = {}
+const collectedVideoIdInit: Record<string, Promise<void> | undefined> = {}
+const collectedVideoIdDirty: Record<string, boolean> = {}
+const collectedVideoIdSyncInflight: Record<string, Promise<void> | undefined> = {}
+let collectedVideoIdFlushTimer: number | null = null
+const COLLECTED_VIDEO_IDS_SYNC_INTERVAL_MS = 30_000
+
+async function syncCollectedVideoIdsIncremental(platform: string): Promise<void> {
+    if (collectedVideoIdSyncInflight[platform]) return collectedVideoIdSyncInflight[platform]
+    collectedVideoIdSyncInflight[platform] = (async () => {
+        const lastCursor = await idbGetCollectedVideoIdsLastSync(platform).catch(() => undefined)
+        const payload: Record<string, unknown> = {platform}
+        if (typeof lastCursor === 'number' && lastCursor > 0) payload.sinceRow = lastCursor
+
+        const resp = await requestAppsScript({
+            type: 'apps_script_request',
+            action: 'getCollectedVideoIds',
+            payload
+        })
+        if (!resp.ok) return
+
+        const data = resp.data as {ok?: boolean; ids?: unknown[]; cursor?: unknown} | null
+        const ids = Array.isArray(data?.ids) ? data!.ids! : []
+        const newCursor = Number(data?.cursor)
+        const set = collectedVideoIdCache[platform] || new Set<string>()
+        let added = 0
+        for (const id of ids) {
+            const s = String(id || '')
+            if (s && !set.has(s)) {
+                set.add(s)
+                added += 1
+            }
+        }
+        collectedVideoIdCache[platform] = set
+        if (added > 0) {
+            try {
+                await idbPutCollectedVideoIds(platform, Array.from(set))
+            } catch {
+            }
+        }
+        if (Number.isFinite(newCursor) && newCursor > 0) {
+            try {
+                await idbPutCollectedVideoIdsLastSync(platform, newCursor)
+            } catch {
+            }
+        }
+    })().finally(() => {
+        collectedVideoIdSyncInflight[platform] = undefined
+    })
+    return collectedVideoIdSyncInflight[platform]
+}
+
+async function ensureCollectedVideoIdCache(platform: string): Promise<Set<string>> {
+    if (!collectedVideoIdCache[platform]) {
+        if (!collectedVideoIdInit[platform]) {
+            collectedVideoIdInit[platform] = (async () => {
+                const set = new Set<string>()
+                try {
+                    const persisted = await idbGetCollectedVideoIds(platform)
+                    if (Array.isArray(persisted)) {
+                        for (const id of persisted) {
+                            const s = String(id || '')
+                            if (s) set.add(s)
+                        }
+                    }
+                } catch {
+                }
+                collectedVideoIdCache[platform] = set
+                await syncCollectedVideoIdsIncremental(platform).catch(() => undefined)
+            })()
+        }
+        await collectedVideoIdInit[platform]
+    } else {
+        const lastSync = await idbGetCollectedVideoIdsLastSync(platform).catch(() => undefined)
+        if (!lastSync || Date.now() - lastSync >= COLLECTED_VIDEO_IDS_SYNC_INTERVAL_MS) {
+            void syncCollectedVideoIdsIncremental(platform).catch(() => undefined)
+        }
+    }
+    return collectedVideoIdCache[platform] || new Set<string>()
+}
+
+function scheduleCollectedVideoIdFlush(): void {
+    if (collectedVideoIdFlushTimer !== null) return
+    collectedVideoIdFlushTimer = self.setTimeout(() => {
+        collectedVideoIdFlushTimer = null
+        for (const platform of Object.keys(collectedVideoIdDirty)) {
+            if (!collectedVideoIdDirty[platform]) continue
+            collectedVideoIdDirty[platform] = false
+            const cache = collectedVideoIdCache[platform]
+            if (!cache) continue
+            void idbPutCollectedVideoIds(platform, Array.from(cache)).catch(() => undefined)
+        }
+    }, 2000) as unknown as number
+}
+
+function ingestUpsertedVideoIds(payload: unknown): void {
+    if (!payload || typeof payload !== 'object') return
+    const p = payload as {platform?: string; videos?: unknown}
+    const platform = String(p.platform || 'tiktok')
+    const cache = collectedVideoIdCache[platform]
+    if (!cache) return
+    const videos = Array.isArray(p.videos) ? p.videos : []
+    let added = 0
+    for (const v of videos) {
+        const vid = (v as {videoId?: unknown})?.videoId
+        const s = String(vid || '')
+        if (s && !cache.has(s)) {
+            cache.add(s)
+            added += 1
+        }
+    }
+    if (added > 0) {
+        collectedVideoIdDirty[platform] = true
+        scheduleCollectedVideoIdFlush()
+    }
+}
+
 function classifyIgTabError(e: unknown): {reason: string; error: string} {
     const raw = e instanceof Error ? e.message : String(e)
     const error = truncateError(raw, 500)
@@ -210,8 +332,8 @@ function classifyIgTabError(e: unknown): {reason: string; error: string} {
     return {reason: 'ig_tab_error', error}
 }
 
-async function ensureIgTabReady(): Promise<{ok: true; tab: chrome.tabs.Tab} | {ok: false; reason: string; error: string}> {
-    const prepared = await ensureTabReady(IG_TAB)
+async function ensureIgTabReady(windowId?: number): Promise<{ok: true; tab: chrome.tabs.Tab} | {ok: false; reason: string; error: string}> {
+    const prepared = await ensureTabReady(IG_TAB, {windowId})
     if (!prepared.ok) {
         return {ok: false, ...classifyIgTabError(prepared.error)}
     }
@@ -219,13 +341,14 @@ async function ensureIgTabReady(): Promise<{ok: true; tab: chrome.tabs.Tab} | {o
     return prepared
 }
 
-async function ensureTikTokTabReady(returnToTabId?: number, targetUrl?: string): Promise<{ok: true; tab: chrome.tabs.Tab; href: string} | {ok: false; reason: string; error: string}> {
+async function ensureTikTokTabReady(returnToTabId?: number, targetUrl?: string, windowId?: number): Promise<{ok: true; tab: chrome.tabs.Tab; href: string} | {ok: false; reason: string; error: string}> {
     const prepared = await ensureTabReady(TK_TAB, {
         activate: true,
         readySelector: '#app',
         returnToTabId,
         selectorTimeoutMs: 15000,
-        targetUrl
+        targetUrl,
+        windowId
     })
     if (!prepared.ok) {
         return {ok: false, reason: 'tk_tab_error', error: prepared.error}
@@ -309,7 +432,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.type === 'apps_script_request') {
         ;(async () => {
-            sendResponse(await requestAppsScript(request as AppsScriptRequestMessage))
+            const response = await requestAppsScript(request as AppsScriptRequestMessage)
+            if (response.ok && (request as AppsScriptRequestMessage).action === 'upsertVideos') {
+                ingestUpsertedVideoIds((request as AppsScriptRequestMessage).payload)
+            }
+            sendResponse(response)
+        })()
+        return true
+    }
+
+    if (request.type === 'get_collected_video_ids') {
+        ;(async () => {
+            try {
+                const platform = String((request as {platform?: unknown}).platform || 'tiktok')
+                const set = await ensureCollectedVideoIdCache(platform)
+                sendResponse({ok: true, ids: Array.from(set)})
+            } catch (error) {
+                sendResponse({ok: false, ids: [], error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
         })()
         return true
     }
@@ -389,6 +529,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true
     }
 
+    if (request.type === 'sheets_sync_atomic_enqueue') {
+        ;(async () => {
+            try {
+                const id = Number(request.id)
+                if (!Number.isFinite(id)) {
+                    sendResponse({ok: false, error: 'invalid_payload_id'})
+                    return
+                }
+                await idbAtomicEnqueueSheetsSync(id, request.payload, request.state)
+                sendResponse({ok: true})
+            } catch (error) {
+                sendResponse({ok: false, error: truncateError(error instanceof Error ? error.message : String(error), 500)})
+            }
+        })()
+        return true
+    }
+
     if (request.type === 'cache_store_whole') {
         if (!Array.isArray(request.bytes) || request.bytes.length === 0) {
             sendResponse({ok: false, error: 'Invalid bytes format'})
@@ -457,7 +614,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.type === PREPARE_IG_TAB) {
         ;(async () => {
-            const prepared = await ensureIgTabReady()
+            const prepared = await ensureIgTabReady(sender.tab?.windowId)
             if (!prepared.ok) {
                 const response: PrepareIgTabResponse = {ok: false, reason: prepared.reason, error: prepared.error}
                 sendResponse(response)
@@ -473,7 +630,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === PREPARE_TK_TAB) {
         ;(async () => {
             const targetUrl = typeof request.url === 'string' ? request.url : undefined
-            const prepared = await ensureTikTokTabReady(sender.tab?.id, targetUrl)
+            const prepared = await ensureTikTokTabReady(sender.tab?.id, targetUrl, sender.tab?.windowId)
             if (!prepared.ok) {
                 sendResponse({ok: false, reason: prepared.reason, error: prepared.error})
                 return
@@ -613,7 +770,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     return
                 }
 
-                const prepared = await ensureIgTabReady()
+                const prepared = await ensureIgTabReady(sender.tab?.windowId)
                 if (!prepared.ok) {
                     releaseLock()
                     sendResponse({ok: false, reason: prepared.reason, error: prepared.error})

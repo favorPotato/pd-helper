@@ -216,12 +216,12 @@ async function collectFromTikTokPool(): Promise<void> {
     if (!params) return
 
     const batchSize = Number(params.batchSize) || 500
-    const maxVideoCount = Number(params.videoCount) || 20
+    const maxVideoCount = Number(params.videoCount) || 50
     const sortType: 'hot' | 'recent' = params.sortType === 'hot' ? 'hot' : 'recent'
     const minLikeRate = Number(params.minLikeRate) || 0.02
     const maxDurationSec = Number(params.maxDurationSec) || 60
     const todayNox = new Date()
-    const defaultFromNox = new Date(todayNox); defaultFromNox.setMonth(defaultFromNox.getMonth() - 3)
+    const defaultFromNox = new Date(todayNox.getFullYear(), 0, 1)
     const fromTs = params.startDate ? new Date(params.startDate as string).getTime() : defaultFromNox.getTime()
     const toTs = params.endDate ? new Date(params.endDate as string + 'T23:59:59').getTime() : todayNox.getTime()
 
