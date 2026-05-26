@@ -51,7 +51,7 @@ if (!Number.isFinite(N) || N <= 0) {
 
 // ---- daemon 化：默认后台，--fg 时跳过 ----
 if (!FG && !process.env.__CDP_CTX_DAEMON__) {
-    const logPath = join(homedir(), `Library/Logs/ig_helper-cdp-ctx-${SEQ}.log`)
+    const logPath = join(homedir(), `Library/Logs/pd-helper-cdp-ctx-${SEQ}.log`)
     const fd = openSync(logPath, 'a')
     const child = spawn(process.execPath, process.argv.slice(1), {
         detached: true,

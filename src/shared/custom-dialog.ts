@@ -24,7 +24,7 @@ export interface DialogConfig {
 
 export type DialogResult = Record<string, string | number | boolean>
 
-const HOST_ID = 'ig-helper-dialog'
+const HOST_ID = 'pd-helper-dialog'
 
 function getOrCreateHost(): {host: HTMLElement; shadow: ShadowRoot} {
     let host = document.getElementById(HOST_ID)

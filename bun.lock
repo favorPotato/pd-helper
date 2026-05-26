@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "ig_helper",
+      "name": "pd-helper",
       "dependencies": {
         "fflate": "^0.8.2",
       },

@@ -9,7 +9,7 @@ interface OverlayButton {
 }
 
 export class FixedOverlay {
-    private static HOST_ID = 'ig-helper-overlay';
+    private static HOST_ID = 'pd-helper-overlay';
     private shadowRoot: ShadowRoot | null = null;
     private statusBox: HTMLElement | null = null;
     private buttonContainer: HTMLElement | null = null;
@@ -52,7 +52,7 @@ export class FixedOverlay {
 
         // Set the platform attribute on the host element
         this.platform = platform;
-        host.setAttribute('data-ig-helper-platform', platform);
+        host.setAttribute('data-pd-helper-platform', platform);
         this.setCollapsed(this.collapsed);
     }
 
@@ -71,7 +71,7 @@ export class FixedOverlay {
 
         // Determine enabled state: enabled if at least one button is enabled
         const enabled = this.buttons.some(button => button.config.visible !== false && button.config.enabled !== false);
-        host.setAttribute('data-ig-helper-enabled', enabled.toString());
+        host.setAttribute('data-pd-helper-enabled', enabled.toString());
     }
 
     private render() {
@@ -178,7 +178,7 @@ export class FixedOverlay {
         background: #e9e9e9;
         color: #333;
       }
-      :host([data-ig-helper-collapsed="true"]) .card {
+      :host([data-pd-helper-collapsed="true"]) .card {
         width: 56px;
         height: 48px;
         padding: 0;
@@ -193,31 +193,31 @@ export class FixedOverlay {
         margin-right: 0;
         opacity: 0.7;
       }
-      :host([data-ig-helper-collapsed="true"][data-ig-helper-platform="instagram"]) .card {
+      :host([data-pd-helper-collapsed="true"][data-pd-helper-platform="instagram"]) .card {
         background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888);
         box-shadow: 0 6px 18px rgba(188, 24, 136, 0.35);
       }
-      :host([data-ig-helper-collapsed="true"][data-ig-helper-platform="tiktok"]) .card {
+      :host([data-pd-helper-collapsed="true"][data-pd-helper-platform="tiktok"]) .card {
         background: #111;
         box-shadow: 0 6px 18px rgba(0,0,0,0.45);
       }
-      :host([data-ig-helper-collapsed="true"][data-ig-helper-platform="nox"]) .card {
+      :host([data-pd-helper-collapsed="true"][data-pd-helper-platform="nox"]) .card {
         background: #ff6b35;
         box-shadow: 0 6px 18px rgba(255, 107, 53, 0.35);
       }
-      :host([data-ig-helper-collapsed="true"][data-ig-helper-platform="unknown"]) .card {
+      :host([data-pd-helper-collapsed="true"][data-pd-helper-platform="unknown"]) .card {
         background: #444;
       }
-      :host([data-ig-helper-collapsed="true"]) .card:hover {
+      :host([data-pd-helper-collapsed="true"]) .card:hover {
         opacity: 1;
         transform: translateX(-4px);
       }
-      :host([data-ig-helper-collapsed="true"]) .status,
-      :host([data-ig-helper-collapsed="true"]) .buttons,
-      :host([data-ig-helper-collapsed="true"]) .log {
+      :host([data-pd-helper-collapsed="true"]) .status,
+      :host([data-pd-helper-collapsed="true"]) .buttons,
+      :host([data-pd-helper-collapsed="true"]) .log {
         display: none;
       }
-      :host([data-ig-helper-collapsed="true"]) .collapse-btn {
+      :host([data-pd-helper-collapsed="true"]) .collapse-btn {
         position: static;
         width: 100%;
         height: 100%;
@@ -226,7 +226,7 @@ export class FixedOverlay {
         font-weight: 800;
         color: #fff;
       }
-      :host([data-ig-helper-collapsed="true"]) .collapse-btn:hover {
+      :host([data-pd-helper-collapsed="true"]) .collapse-btn:hover {
         background: transparent;
         color: #fff;
       }
@@ -279,7 +279,7 @@ export class FixedOverlay {
         this.collapsed = collapsed;
         const host = document.getElementById(FixedOverlay.HOST_ID);
         if (host) {
-            host.setAttribute('data-ig-helper-collapsed', collapsed.toString());
+            host.setAttribute('data-pd-helper-collapsed', collapsed.toString());
         }
         if (this.collapseButton) {
             this.collapseButton.textContent = collapsed ? this.getCollapsedLabel() : '-';

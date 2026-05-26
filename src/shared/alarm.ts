@@ -1,4 +1,4 @@
-const ALARM_HOST_ID = 'ig-helper-alarm'
+const ALARM_HOST_ID = 'pd-helper-alarm'
 
 let alarmTimer: number | null = null
 let beepInterval: number | null = null
