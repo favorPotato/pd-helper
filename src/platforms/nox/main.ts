@@ -4,6 +4,12 @@ import {truncateError} from '../../shared/errors'
 import {safeSendMessage} from '../../shared/messaging'
 import {
     isNoxLogMessage,
+    NOX_AUTO_COLLECT_REMOTE,
+    NOX_BACKFILL_PROFILES_REMOTE,
+    NOX_COLLECT_AUDIENCE_REMOTE,
+    NOX_COLLECT_TIKTOK_POOL_REMOTE,
+    NOX_PAUSE_AUTO_COLLECT_REMOTE,
+    NOX_RESUME_AUTO_COLLECT_REMOTE,
     PREPARE_TK_TAB,
     type PrepareTkTabResponse,
     TK_COLLECT_VIA_TAB,
@@ -11,6 +17,7 @@ import {
     type TkProfileMetricsResponse,
     type TkCollectViaTabResponse
 } from '../../shared/remote-collect'
+import {runFireAndForget} from '../../shared/cli-bridge/cs-runtime'
 import {sleepRandom} from '../../shared/timing'
 import {enqueueUpdateStatus, enqueueUpsertInfluencers} from '../../shared/sheets-sync'
 import {
@@ -43,9 +50,237 @@ function initNoxMessageHandler(): void {
     if (window.__NOX_MESSAGE_HANDLER_LOADED__) return
     window.__NOX_MESSAGE_HANDLER_LOADED__ = true
 
-    chrome.runtime.onMessage.addListener((msg) => {
-        if (!isNoxLogMessage(msg)) return
-        UiHelper.log(msg.message)
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+        if (isNoxLogMessage(msg)) {
+            UiHelper.log(msg.message)
+            return
+        }
+
+        if (msg?.type === NOX_PAUSE_AUTO_COLLECT_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) { sendResponse({ok: false, error: 'taskId required'}); return true }
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.log('暂停长任务...')
+                await pauseLongTask()
+                autoCollectPaused = true
+                rt.log('已暂停')
+                return {paused: true}
+            })
+            return true
+        }
+
+        if (msg?.type === NOX_RESUME_AUTO_COLLECT_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) { sendResponse({ok: false, error: 'taskId required'}); return true }
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.log('继续长任务...')
+                await resumeLongTask()
+                autoCollectPaused = false
+                rt.log('已继续')
+                return {resumed: true}
+            })
+            return true
+        }
+
+        if (msg?.type === NOX_COLLECT_AUDIENCE_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) { sendResponse({ok: false, error: 'taskId required'}); return true }
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                rt.log('触发受众采集（依赖当前页 DOM 上已勾选的博主）...')
+                await collectAudienceFromNox()
+                rt.log('受众采集流程结束')
+                return {ok: true}
+            })
+            return true
+        }
+
+        if (msg?.type === NOX_BACKFILL_PROFILES_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) { sendResponse({ok: false, error: 'taskId required'}); return true }
+            const batchSize = Math.max(1, Number(msg.batchSize) || 100)
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                if (audienceCollectInProgress || tkCollectInProgress) {
+                    throw new Error('another nox task is in progress')
+                }
+                let influencers: NoxInfluencer[]
+                try {
+                    const resp = await callAppsScript<{ok: boolean; items: NoxInfluencer[]}>('loadInfluencersByField', {
+                        platform: 'tiktok',
+                        field: 'genderTag',
+                        operator: 'empty',
+                        limit: batchSize
+                    })
+                    influencers = resp.items || []
+                } catch (error) {
+                    throw new Error(`拉取空画像博主失败: ${truncateError(error, 200)}`)
+                }
+                if (influencers.length === 0) {
+                    rt.log('没有待回填的空画像博主')
+                    return {batchSize, processed: 0, succeeded: 0, failed: 0}
+                }
+                rt.log(`开始回填 ${influencers.length} 个空画像博主`)
+                await UiHelper.setBusyState({backfillCollecting: true})
+                try {
+                    const {succeededCount: succeeded, failedCount: failed} = await backfillAudienceProfiles(
+                        influencers.map((item) => item.channelId),
+                        (m) => rt.log(`[回填画像] ${m}`)
+                    )
+                    rt.log(`回填结束：成功 ${succeeded}，失败 ${failed}`)
+                    return {batchSize, processed: influencers.length, succeeded, failed}
+                } finally {
+                    await UiHelper.setBusyState({backfillCollecting: false})
+                }
+            })
+            return true
+        }
+
+        if (msg?.type === NOX_COLLECT_TIKTOK_POOL_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) { sendResponse({ok: false, error: 'taskId required'}); return true }
+            if (audienceCollectInProgress || tkCollectInProgress) {
+                sendResponse({ok: false, error: 'another nox task is in progress'}); return true
+            }
+            const batchSize = Math.max(1, Number(msg.batchSize) || 500)
+            const maxVideoCount = Math.max(1, Number(msg.maxVideoCount) || 50)
+            const sortType: 'hot' | 'recent' = msg.sortType === 'hot' ? 'hot' : 'recent'
+            const minLikeRate = Number(msg.minLikeRate) || 0.02
+            const maxDurationSec = Number(msg.maxDurationSec) || 60
+            const nowPool = Date.now()
+            const defaultFromPool = new Date(new Date().getFullYear(), 0, 1).getTime()
+            const fromTs = Number(msg.fromTs) || defaultFromPool
+            const toTs = Number(msg.toTs) || nowPool
+
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                tkCollectInProgress = true
+                await UiHelper.setBusyState({tkCollecting: true})
+                try {
+                    let tkTabId = 0
+                    const ensureTabAt = async (username: string): Promise<void> => {
+                        const profileUrl = `https://www.tiktok.com/@${username}`
+                        const prepared = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB, url: profileUrl})
+                        if (!prepared?.ok || !prepared.tabId) {
+                            throw new Error(`TikTok 执行页不可用: ${prepared?.error || '未知错误'}`)
+                        }
+                        tkTabId = prepared.tabId
+                        rt.log(`TikTok 执行页就绪: ${prepared.href || profileUrl}`)
+                    }
+
+                    const noxExecutor: CollectExecutor = {
+                        label: (_progress, inf) => `${inf.genderTag}${buildInfluencerLabel(inf)}`,
+                        log: (m) => rt.log(m),
+                        collectOne: async (influencer, p) => {
+                            rt.throwIfCancelled()
+                            if (!tkTabId) await ensureTabAt(influencer.username)
+
+                            const runMetrics = async () => safeSendMessage<TkProfileMetricsResponse>({
+                                type: TK_PROFILE_METRICS_VIA_TAB,
+                                tabId: tkTabId,
+                                username: influencer.username,
+                                minLikeRate: p.minLikeRate,
+                                maxDurationSec: p.maxDurationSec
+                            })
+
+                            let metricsResult = await runMetrics()
+                            if (!metricsResult?.ok) {
+                                const errorMsg = metricsResult?.error || '指标预估失败'
+                                if (errorMsg.includes('当前博主已关闭评论功能')) throw new Error(errorMsg)
+                                rt.log(`${errorMsg}，重建 TK tab 后重试...`)
+                                const resetResult = await safeSendMessage<{ok: boolean; closedTabs?: number; removed?: number; removeFailed?: number; error?: string}>({type: 'reset_tk_tab', tabId: tkTabId})
+                                if (!resetResult?.ok) throw new Error(`TK tab 重建失败: ${resetResult?.error || 'reset_tk_tab 无响应'}`)
+                                rt.log(`TK tab 重建完成`)
+                                tkTabId = 0
+                                await ensureTabAt(influencer.username)
+                                metricsResult = await runMetrics()
+                                if (!metricsResult?.ok) throw new Error(`指标预估重试仍失败：${metricsResult?.error || errorMsg}`)
+                            }
+
+                            await enqueueUpdateStatus('tiktok', influencer.channelId, {
+                                qualifyingRate: metricsResult.qualifyingRate,
+                                postRate: metricsResult.postRate ?? '',
+                                updatedAt: new Date().toISOString()
+                            })
+
+                            const collectResult = await safeSendMessage<TkCollectViaTabResponse>({
+                                type: TK_COLLECT_VIA_TAB,
+                                tabId: tkTabId,
+                                username: influencer.username,
+                                maxVideoCount: p.maxVideoCount,
+                                fromTs: p.fromTs,
+                                toTs: p.toTs,
+                                minLikeRate: p.minLikeRate,
+                                maxDurationSec: p.maxDurationSec,
+                                filenamePrefix: influencer.genderTag,
+                                sortType: p.sortType
+                            })
+
+                            if (!collectResult?.ok) throw new Error(collectResult?.error || '采集失败')
+                            return {
+                                filename: collectResult.filename,
+                                downloadSummary: collectResult.downloadSummary || {succeeded: 0, attempted: 0, failed: 0}
+                            }
+                        }
+                    }
+
+                    await runTkBatchCollect(noxExecutor, {batchSize, fromTs, toTs, minLikeRate, maxDurationSec, sortType, maxVideoCount})
+                    return {batchSize, completed: true}
+                } finally {
+                    tkCollectInProgress = false
+                    await UiHelper.setBusyState({tkCollecting: false})
+                }
+            })
+            return true
+        }
+
+        if (msg?.type === NOX_AUTO_COLLECT_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            if (tkCollectInProgress || audienceCollectInProgress) {
+                sendResponse({ok: false, error: 'another nox task is in progress'})
+                return true
+            }
+            const targetCount = Math.max(1, Number(msg.targetCount) || 5000)
+            const collectProfile = msg.collectProfile !== false
+            const startPageNum = Math.max(1, Number(msg.startPageNum) || 1)
+
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                // 从当前 noxinfluencer 搜索页 URL 自动读取筛选条件
+                const baseParams = readBaseParamsFromUrl()
+                rt.log(`启动自动采集：目标 ${targetCount}，画像=${collectProfile}，起始页 ${startPageNum}`)
+                rt.log(`base params: ${JSON.stringify(baseParams)}`)
+
+                await UiHelper.setBusyState({autoCollecting: true})
+                autoCollectPaused = false
+                try {
+                    await startAutoCollect(
+                        {targetCount, collectProfile, baseParams, startPageNum},
+                        (m) => {
+                            UiHelper.setAutoCollectStatus(m)
+                            UiHelper.log(m)
+                            rt.log(m)
+                        }
+                    )
+                } finally {
+                    await UiHelper.setBusyState({autoCollecting: false})
+                    UiHelper.setAutoCollectStatus('')
+                }
+                return {targetCount, collectProfile, startPageNum, completed: true}
+            })
+            return true
+        }
+        return
     })
 }
 

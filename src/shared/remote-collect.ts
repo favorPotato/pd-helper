@@ -10,6 +10,20 @@ export const TK_COLLECT_PROGRESS = 'tk_collect_progress'
 export const TK_PREPARE_PAGE_CONTEXT = 'tk_prepare_page_context'
 export const NOX_LOG = 'nox_log'
 
+// cli-bridge 业务接入用：CS 端 fire-and-forget remote handler
+export const TK_BATCH_COLLECT_REMOTE = 'tk_batch_collect_remote'
+export const TK_DOWNLOAD_VIDEO_REMOTE = 'tk_download_video_remote'
+export const TK_BRIDGE_TO_IG_REMOTE = 'tk_bridge_to_ig_remote'
+export const IG_COLLECT_REELS_REMOTE = 'ig_collect_reels_remote'
+export const IG_MANUAL_ANALYZE_REMOTE = 'ig_manual_analyze_remote'
+export const IG_GENERATE_SCRIPT_REMOTE = 'ig_generate_script_remote'
+export const NOX_AUTO_COLLECT_REMOTE = 'nox_auto_collect_remote'
+export const NOX_COLLECT_AUDIENCE_REMOTE = 'nox_collect_audience_remote'
+export const NOX_BACKFILL_PROFILES_REMOTE = 'nox_backfill_profiles_remote'
+export const NOX_COLLECT_TIKTOK_POOL_REMOTE = 'nox_collect_tiktok_pool_remote'
+export const NOX_PAUSE_AUTO_COLLECT_REMOTE = 'nox_pause_auto_collect_remote'
+export const NOX_RESUME_AUTO_COLLECT_REMOTE = 'nox_resume_auto_collect_remote'
+
 interface RemoteDownloadSummary {
     succeeded: number
     failed: number

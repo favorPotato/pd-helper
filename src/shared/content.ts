@@ -1,6 +1,8 @@
 import type {Mp4Meta, UploadResult} from '../platforms/instagram/uploader'
 import type {HeaderValues} from './header-cache'
 import {truncateError} from './errors'
+import {runFireAndForget} from './cli-bridge/cs-runtime'
+import {delay} from './timing'
 
 type ExecuteUploadFn = (
     videoBlob: Blob,
@@ -28,6 +30,22 @@ async function start(): Promise<void> {
             if (msg?.type === 'ping') {
                 sendResponse({ok: true, from: 'content_script', href: location.href})
                 return
+            }
+
+            // cli-bridge —— CS 链路冒烟用：收到后立即 ack，异步推 pd:log/pd:done
+            if (msg?.type === 'pd:csTest' && typeof msg.taskId === 'string') {
+                const taskId = msg.taskId
+                const count = Math.max(1, Math.min(5, Number(msg.count) || 3))
+                sendResponse({ok: true, accepted: true})
+                void runFireAndForget(taskId, async (rt) => {
+                    for (let i = 1; i <= count; i += 1) {
+                        rt.throwIfCancelled()
+                        await delay(300)
+                        rt.log(`cs tick ${i}/${count}`)
+                    }
+                    return {from: 'content_script', href: location.href, ticks: count}
+                })
+                return true
             }
         })
     }

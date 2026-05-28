@@ -3,6 +3,8 @@ import {InstagramRequestAbortError, UiHelper, UrlHelper} from './helpers'
 import {truncateError} from '../../shared/errors'
 import type {ReelsCollectRange} from './types'
 import type {ScriptApiEndpoint, ScriptApiRequestMessage, ScriptApiResponse, ScriptApiUploadFile} from '../../types'
+import {IG_COLLECT_REELS_REMOTE, IG_GENERATE_SCRIPT_REMOTE, IG_MANUAL_ANALYZE_REMOTE} from '../../shared/remote-collect'
+import {runFireAndForget, withPdCode} from '../../shared/cli-bridge/cs-runtime'
 
 let analysisInProgress = false
 let reelsCollectionInProgress = false
@@ -392,7 +394,86 @@ async function runCollectReelsWorkflow(order: 'asc' | 'desc' = 'asc') {
     }
 }
 
+function initIgRemoteHandler(): void {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+        if (!msg || typeof msg !== 'object') return
+
+        if (msg.type === IG_COLLECT_REELS_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            const username = typeof msg.username === 'string' ? msg.username.trim() : ''
+            if (!username) {
+                sendResponse({ok: false, error: 'username required'})
+                return true
+            }
+            const order: 'asc' | 'desc' = msg.order === 'desc' ? 'desc' : 'asc'
+            const rangeFromStr = typeof msg.rangeFrom === 'string' ? msg.rangeFrom : ''
+            const rangeToStr = typeof msg.rangeTo === 'string' ? msg.rangeTo : ''
+            let range: ReelsCollectRange | null = null
+            if (rangeFromStr || rangeToStr) {
+                const start = Math.max(1, Number(rangeFromStr) || 1)
+                const end = Math.max(start, Number(rangeToStr) || start)
+                range = {start, end}
+            }
+
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                rt.log(`开始采集 @${username} 的 reels（${order === 'asc' ? '正序' : '倒序'}${range ? `，区间 ${range.start}-${range.end}` : '，全部'}）`)
+                const collected = await Analyzer.collectReelsForUsername(username, (m) => rt.log(m), range, order)
+                if (!collected) {
+                    throw withPdCode(new Error('采集失败：无法读取账号或分页数据'), 'LOGIN_REQUIRED')
+                }
+                rt.throwIfCancelled()
+                await Analyzer.downloadJson(collected.filename, collected.output)
+                const total = collected.output.meta?.total_posts ?? collected.output.posts?.length ?? 0
+                rt.log(`采集完成：${total} 条`)
+                return {filename: collected.filename, totalPosts: total}
+            })
+            return true
+        }
+
+        if (msg.type === IG_MANUAL_ANALYZE_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                rt.log('开始手动分析（依赖当前页 = IG 帖子详情页）...')
+                await runManualAnalysisWorkflow()
+                rt.log('手动分析完成')
+                return {ok: true}
+            })
+            return true
+        }
+
+        if (msg.type === IG_GENERATE_SCRIPT_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                rt.log('开始生成剧本（依赖当前页 = IG 帖子详情页）...')
+                await runGenerateScriptWorkflow()
+                rt.log('生成剧本流程完成')
+                return {ok: true}
+            })
+            return true
+        }
+    })
+}
+
 export function setup() {
+    initIgRemoteHandler()
     // 初始化UI
     void UiHelper.inject({
         onManualAnalyze: runManualAnalysisWorkflow,

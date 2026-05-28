@@ -20,10 +20,14 @@ import type {NoxInfluencer} from '../nox/types'
 import {
     reportRemoteCollectProgress,
     type PrepareTkPageContextResponse,
+    TK_BATCH_COLLECT_REMOTE,
+    TK_BRIDGE_TO_IG_REMOTE,
+    TK_DOWNLOAD_VIDEO_REMOTE,
     TK_PROFILE_METRICS_REMOTE,
     TK_COLLECT_REMOTE,
     TK_PREPARE_PAGE_CONTEXT
 } from '../../shared/remote-collect'
+import {runFireAndForget} from '../../shared/cli-bridge/cs-runtime'
 
 declare const window: Window & {
     __TT_BRIDGE_HANDLER_LOADED__?: boolean
@@ -53,20 +57,50 @@ function initTikTokMessageHandler(): void {
         if (!msg || typeof msg !== 'object') return
 
         if (msg.type === TK_COLLECT_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            const clientTabId = typeof msg.clientTabId === 'number' ? msg.clientTabId : 0
+            const username = typeof msg.username === 'string' ? msg.username : ''
+            const maxVideoCount = typeof msg.maxVideoCount === 'number' ? msg.maxVideoCount : 10
+            const now = Date.now()
+            const defaultFromTs = now - 90 * 24 * 60 * 60 * 1000
+            const fromTs = typeof msg.fromTs === 'number' ? msg.fromTs : (typeof msg.startYear === 'number' ? new Date(msg.startYear, 0, 1).getTime() : defaultFromTs)
+            const toTs = typeof msg.toTs === 'number' ? msg.toTs : (typeof msg.endYear === 'number' ? new Date(msg.endYear, 11, 31, 23, 59, 59).getTime() : now)
+            const filters: CollectFilterOptions = {
+                minLikeRate: typeof msg.minLikeRate === 'number' ? msg.minLikeRate : 0.02,
+                maxDurationSec: typeof msg.maxDurationSec === 'number' ? msg.maxDurationSec : 60
+            }
+            const filenamePrefix = typeof msg.filenamePrefix === 'string' ? msg.filenamePrefix : ''
+            const remoteSortType: SortType = msg.sortType === 'hot' ? 'hot' : 'recent'
+
+            // cli-bridge 路径：fire-and-forget，立即 ack，进度走 pd:log，结果走 pd:done
+            if (taskId) {
+                sendResponse({ok: true, accepted: true})
+                void runFireAndForget(taskId, async (rt) => {
+                    rt.throwIfCancelled()
+                    const excludeVideoIds = await loadCollectedVideoIdSet()
+                    rt.log(`已加载 ${excludeVideoIds.size} 个已采视频 ID 用于去重`)
+                    const onSelectedCount = (selectedCount: number, targetCount: number) => rt.log(`入选 ${selectedCount}/${targetCount}`)
+                    const onDownloadProgress = (downloadedCount: number, selectedCount: number, targetCount: number) => rt.log(`下载 ${downloadedCount}/${selectedCount}（目标 ${targetCount} 入选 ${selectedCount}）`)
+                    const onDownloadFailed = (videoId: string) => rt.log(`下载失败：${videoId}，已跳过`)
+                    const onLog = (message: string) => rt.log(message)
+
+                    const result = username
+                        ? await Collector.collectProfileByUsername(username, maxVideoCount, fromTs, toTs, filters, onSelectedCount, onDownloadProgress, onDownloadFailed, filenamePrefix, onLog, excludeVideoIds, remoteSortType)
+                        : await Collector.collectCurrentProfile(maxVideoCount, fromTs, toTs, filters, onSelectedCount, onDownloadProgress, onDownloadFailed, filenamePrefix, onLog, excludeVideoIds, remoteSortType)
+
+                    rt.throwIfCancelled()
+                    return {
+                        filename: result.filename,
+                        videoCount: result.output.videos?.length || 0,
+                        downloadSummary: result.downloadSummary
+                    }
+                })
+                return true
+            }
+
+            // 原 nox 联动路径：保留 await + sendResponse 模式
             ;(async () => {
                 try {
-                    const clientTabId = typeof msg.clientTabId === 'number' ? msg.clientTabId : 0
-                    const username = typeof msg.username === 'string' ? msg.username : ''
-                    const maxVideoCount = typeof msg.maxVideoCount === 'number' ? msg.maxVideoCount : 10
-                    const now = Date.now()
-                    const defaultFromTs = now - 90 * 24 * 60 * 60 * 1000
-                    const fromTs = typeof msg.fromTs === 'number' ? msg.fromTs : (typeof msg.startYear === 'number' ? new Date(msg.startYear, 0, 1).getTime() : defaultFromTs)
-                    const toTs = typeof msg.toTs === 'number' ? msg.toTs : (typeof msg.endYear === 'number' ? new Date(msg.endYear, 11, 31, 23, 59, 59).getTime() : now)
-                    const filters: CollectFilterOptions = {
-                        minLikeRate: typeof msg.minLikeRate === 'number' ? msg.minLikeRate : 0.02,
-                        maxDurationSec: typeof msg.maxDurationSec === 'number' ? msg.maxDurationSec : 60
-                    }
-                    const filenamePrefix = typeof msg.filenamePrefix === 'string' ? msg.filenamePrefix : ''
                     const onSelectedCount = (selectedCount: number, targetCount: number) => reportRemoteCollectProgress(clientTabId, `入选 ${selectedCount}/${targetCount}`)
                     const onDownloadProgress = (downloadedCount: number, selectedCount: number, targetCount: number) => reportRemoteCollectProgress(clientTabId, `下载 ${downloadedCount}/${selectedCount}（目标 ${targetCount} 入选 ${selectedCount}）`)
                     const onDownloadFailed = (videoId: string) => reportRemoteCollectProgress(clientTabId, `下载失败：${videoId}，已跳过`)
@@ -75,36 +109,9 @@ function initTikTokMessageHandler(): void {
                     const excludeVideoIds = await loadCollectedVideoIdSet()
                     onLog(`已加载 ${excludeVideoIds.size} 个已采视频 ID 用于去重`)
 
-                    const remoteSortType: SortType = msg.sortType === 'hot' ? 'hot' : 'recent'
-
                     const result = username
-                        ? await Collector.collectProfileByUsername(
-                            username,
-                            maxVideoCount,
-                            fromTs,
-                            toTs,
-                            filters,
-                            onSelectedCount,
-                            onDownloadProgress,
-                            onDownloadFailed,
-                            filenamePrefix,
-                            onLog,
-                            excludeVideoIds,
-                            remoteSortType
-                        )
-                        : await Collector.collectCurrentProfile(
-                            maxVideoCount,
-                            fromTs,
-                            toTs,
-                            filters,
-                            onSelectedCount,
-                            onDownloadProgress,
-                            onDownloadFailed,
-                            filenamePrefix,
-                            onLog,
-                            excludeVideoIds,
-                            remoteSortType
-                        )
+                        ? await Collector.collectProfileByUsername(username, maxVideoCount, fromTs, toTs, filters, onSelectedCount, onDownloadProgress, onDownloadFailed, filenamePrefix, onLog, excludeVideoIds, remoteSortType)
+                        : await Collector.collectCurrentProfile(maxVideoCount, fromTs, toTs, filters, onSelectedCount, onDownloadProgress, onDownloadFailed, filenamePrefix, onLog, excludeVideoIds, remoteSortType)
 
                     sendResponse({
                         ok: true,
@@ -120,14 +127,27 @@ function initTikTokMessageHandler(): void {
         }
 
         if (msg.type === TK_PROFILE_METRICS_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            const clientTabId = typeof msg.clientTabId === 'number' ? msg.clientTabId : 0
+            const username = typeof msg.username === 'string' ? msg.username : ''
+            const filters: CollectFilterOptions = {
+                minLikeRate: typeof msg.minLikeRate === 'number' ? msg.minLikeRate : 0.02,
+                maxDurationSec: typeof msg.maxDurationSec === 'number' ? msg.maxDurationSec : 60
+            }
+
+            if (taskId) {
+                sendResponse({ok: true, accepted: true})
+                void runFireAndForget(taskId, async (rt) => {
+                    rt.throwIfCancelled()
+                    const metrics = await Collector.computeProfileMetricsByUsername(username, filters, (m) => rt.log(m))
+                    rt.throwIfCancelled()
+                    return metrics
+                })
+                return true
+            }
+
             ;(async () => {
                 try {
-                    const clientTabId = typeof msg.clientTabId === 'number' ? msg.clientTabId : 0
-                    const username = typeof msg.username === 'string' ? msg.username : ''
-                    const filters: CollectFilterOptions = {
-                        minLikeRate: typeof msg.minLikeRate === 'number' ? msg.minLikeRate : 0.02,
-                        maxDurationSec: typeof msg.maxDurationSec === 'number' ? msg.maxDurationSec : 60
-                    }
                     const onLog = (message: string) => reportRemoteCollectProgress(clientTabId, message)
                     const metrics = await Collector.computeProfileMetricsByUsername(username, filters, onLog)
                     sendResponse({ok: true, ...metrics})
@@ -135,6 +155,120 @@ function initTikTokMessageHandler(): void {
                     sendResponse({ok: false, error: Collector.formatError(error)})
                 }
             })()
+            return true
+        }
+
+        if (msg.type === TK_BATCH_COLLECT_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            const batchSize = typeof msg.batchSize === 'number' ? msg.batchSize : 500
+            const maxVideoCount = typeof msg.maxVideoCount === 'number' ? msg.maxVideoCount : 50
+            const sortType: SortType = msg.sortType === 'hot' ? 'hot' : 'recent'
+            const minLikeRate = typeof msg.minLikeRate === 'number' ? msg.minLikeRate : 0.02
+            const maxDurationSec = typeof msg.maxDurationSec === 'number' ? msg.maxDurationSec : 60
+            const now = Date.now()
+            const defaultFromTs = new Date(new Date().getFullYear(), 0, 1).getTime()
+            const fromTs = typeof msg.fromTs === 'number' ? msg.fromTs : defaultFromTs
+            const toTs = typeof msg.toTs === 'number' ? msg.toTs : now
+
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                const sharedExcludeVideoIds = await loadCollectedVideoIdSet()
+                rt.log(`已加载 ${sharedExcludeVideoIds.size} 个已采视频 ID 用于去重（全批共享）`)
+
+                const tkExecutor: CollectExecutor = {
+                    label: (_progress, inf) => `${inf.genderTag}${inf.name || `@${inf.username}`}`,
+                    log: (m) => rt.log(m),
+                    collectOne: async (influencer, p) => {
+                        rt.throwIfCancelled()
+                        try {
+                            const metrics = await Collector.computeProfileMetricsByUsername(
+                                influencer.username,
+                                {minLikeRate: p.minLikeRate, maxDurationSec: p.maxDurationSec},
+                                (m) => rt.log(m)
+                            )
+                            await enqueueUpdateStatus('tiktok', influencer.channelId, {
+                                qualifyingRate: metrics.qualifyingRate,
+                                postRate: metrics.postRate,
+                                updatedAt: new Date().toISOString()
+                            })
+                        } catch (error) {
+                            const errorMsg = truncateError(error instanceof Error ? error.message : String(error), 200)
+                            await chrome.runtime.sendMessage({type: 'reset_tk_tab'})
+                            throw new BatchAbortError(`指标预估失败：${errorMsg}`)
+                        }
+                        rt.throwIfCancelled()
+                        return await Collector.collectProfileByUsername(
+                            influencer.username,
+                            p.maxVideoCount,
+                            p.fromTs,
+                            p.toTs,
+                            {minLikeRate: p.minLikeRate, maxDurationSec: p.maxDurationSec},
+                            (selectedCount, targetCount) => rt.log(`入选 ${selectedCount}/${targetCount}`),
+                            (downloadedCount, selectedCount) => rt.log(`下载 ${downloadedCount}/${selectedCount}`),
+                            (videoId) => rt.log(`下载失败：${videoId}，已跳过`),
+                            influencer.genderTag,
+                            (m) => rt.log(m),
+                            sharedExcludeVideoIds,
+                            p.sortType
+                        )
+                    }
+                }
+
+                await runTkBatchCollect(tkExecutor, {
+                    batchSize, fromTs, toTs, minLikeRate, maxDurationSec, sortType, maxVideoCount
+                })
+                return {batchSize, completed: true}
+            })
+            return true
+        }
+
+        if (msg.type === TK_DOWNLOAD_VIDEO_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                rt.log('开始下载当前视频...')
+                const videoData = await Downloader.downloadTikTokVideo()
+                const blob = new Blob([videoData.bytes], {type: videoData.mime})
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = videoData.name
+                a.click()
+                URL.revokeObjectURL(url)
+                rt.log(`视频下载完成: ${videoData.name}`)
+                return {filename: videoData.name, size: videoData.bytes.byteLength, mime: videoData.mime}
+            })
+            return true
+        }
+
+        if (msg.type === TK_BRIDGE_TO_IG_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            const caption = typeof msg.caption === 'string' ? msg.caption : ''
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                rt.log('开始转发到 Instagram...')
+                const result = await Relay.executeDownloadAndBridge(caption)
+                if (!result.ok) {
+                    throw new Error(`转发失败: ${result.error || '未知错误'}`)
+                }
+                rt.log('转发成功')
+                return {size: result.size, meta: result.meta, uploadResult: result.uploadResult}
+            })
             return true
         }
 

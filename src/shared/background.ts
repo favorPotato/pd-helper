@@ -37,6 +37,11 @@ import {
 } from './remote-collect'
 import {delay} from './timing'
 import {ensureTabReady, IG_TAB, TK_TAB} from './tab-manager'
+import {ingestHeartbeat, ingestRemoteLog, installPdFacade, markTaskDone} from './cli-bridge/facade'
+
+// CLI bridge：必须在 SW 顶部同步初始化，使 CDP evaluate 首次唤醒 SW 时
+// globalThis.__pd 已经就绪
+installPdFacade()
 
 // Bridge lock to prevent multi-tab race conditions
 let bridgeLock = {held: false, since: 0}
@@ -387,6 +392,35 @@ void clearStaleCache()
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (!request || typeof request !== 'object') return
+
+    // cli-bridge：CS → SW 单向上行，不需要回包
+    if (request.type === 'pd:log') {
+        const taskId = String(request.taskId || '')
+        if (taskId) {
+            const data = (request.data && typeof request.data === 'object') ? request.data : {message: String(request.message || '')}
+            ingestRemoteLog(taskId, 'progress', data as Record<string, unknown>)
+        }
+        return
+    }
+
+    if (request.type === 'pd:heartbeat') {
+        const taskId = String(request.taskId || '')
+        if (taskId) ingestHeartbeat(taskId)
+        return
+    }
+
+    if (request.type === 'pd:done') {
+        const taskId = String(request.taskId || '')
+        if (taskId) {
+            // 严格判断：仅 success === true 才视为成功，漏发或 undefined 都按失败处理
+            const success = request.success === true
+            const payload: Record<string, unknown> = success
+                ? {result: request.result}
+                : {code: String(request.error?.code || 'UNKNOWN_ERROR'), message: String(request.error?.message || 'pd:done without success flag')}
+            markTaskDone(taskId, success, payload)
+        }
+        return
+    }
 
     if (request.action === 'download') {
         if (typeof request.url !== 'string' || typeof request.filename !== 'string') return
