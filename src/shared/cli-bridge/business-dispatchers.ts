@@ -1,4 +1,5 @@
 import type {DispatchContext, DispatchFn, PdFacade} from './types'
+import {PLATFORM_INSTAGRAM, PLATFORM_NOX, PLATFORM_TIKTOK, type PlatformSpec} from './platforms'
 import {
     IG_COLLECT_REELS_REMOTE,
     IG_GENERATE_SCRIPT_REMOTE,
@@ -19,14 +20,6 @@ import {
     TK_PROFILE_METRICS_REMOTE
 } from '../remote-collect'
 
-interface PlatformSpec {
-    name: string
-    urls: string[]
-}
-
-const PLATFORM_TIKTOK: PlatformSpec = {name: 'tiktok', urls: ['*://*.tiktok.com/*']}
-const PLATFORM_INSTAGRAM: PlatformSpec = {name: 'instagram', urls: ['*://*.instagram.com/*']}
-const PLATFORM_NOX: PlatformSpec = {name: 'noxinfluencer', urls: ['*://*.noxinfluencer.com/*']}
 const RUNTIME_PAGE = 'runtime.html'
 
 async function findTab(spec: PlatformSpec): Promise<chrome.tabs.Tab | null> {

@@ -1,44 +1,12 @@
-import type {AttachedSession} from './cdp'
-import {callPd, CdpError, reconnectSession} from './cdp'
-import {emit, emitSynthetic, ttyLog, type LogFrame} from './ndjson'
-import {exitFor} from './errors'
-import {sleep} from './util'
-
-export interface RunOpts {
-    method: string
-    params: Record<string, unknown>
-    pollIntervalMs: number
-    statusIntervalMs: number
-    timeoutMs: number
-}
-
-interface TailResult {
-    logs: LogFrame[]
-    hasMore: boolean
-    nextSeq: number
-    firstSeq: number
-}
-
-interface CallResult {
-    taskId: string
-    tabId: number | null
-}
-
-interface StatusSnapshot {
-    status: 'starting' | 'running' | 'done' | 'cancelled' | 'error' | 'orphaned'
-    phase: string
-    done: number
-    total: number | null
-    errors: number
-    etaSeconds: number | null
-    isAlive: boolean
-    lastLog: string
-    lastSeq: number
-}
+import {callPd} from './rpc.mjs'
+import {CdpError} from './transport.mjs'
+import {reconnectSession} from './attach.mjs'
+import {emit, emitSynthetic, ttyLog, sleep} from './io.mjs'
+import {exitFor} from './codes.mjs'
 
 const TERMINAL_STATUS = new Set(['done', 'cancelled', 'error', 'orphaned'])
 
-async function tryReconnect(session: AttachedSession): Promise<boolean> {
+async function tryReconnect(session) {
     for (let i = 0; i < 3; i += 1) {
         const wait = 500 * (1 << i)
         ttyLog(`[pd-helper-cli] WS closed, reconnect attempt ${i + 1}/3 after ${wait}ms`)
@@ -48,23 +16,23 @@ async function tryReconnect(session: AttachedSession): Promise<boolean> {
             ttyLog(`[pd-helper-cli] reconnected (via=${session.via})`)
             return true
         } catch (e) {
-            ttyLog(`[pd-helper-cli] reconnect failed: ${(e as Error).message}`)
+            ttyLog(`[pd-helper-cli] reconnect failed: ${e.message}`)
         }
     }
     return false
 }
 
-async function ensureTaskAlive(session: AttachedSession, taskId: string): Promise<boolean> {
+async function ensureTaskAlive(session, taskId) {
     try {
-        const list = await callPd<Array<{taskId: string}>>(session, 'listTasks', [{all: true}])
+        const list = await callPd(session, 'listTasks', [{all: true}])
         return list.some(t => t.taskId === taskId)
     } catch {
         return false
     }
 }
 
-export async function runCall(session: AttachedSession, opts: RunOpts): Promise<number> {
-    const callRes = await callPd<CallResult>(session, 'call', [opts.method, opts.params])
+export async function runCall(session, opts) {
+    const callRes = await callPd(session, 'call', [opts.method, opts.params])
     const taskId = callRes.taskId
     ttyLog(`[pd-helper-cli] started taskId=${taskId} tabId=${callRes.tabId ?? 'n/a'}`)
 
@@ -80,15 +48,16 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
         }
         cancelSent = true
         ttyLog('[pd-helper-cli] SIGINT → cancel')
-        try { await callPd(session, 'cancel', [taskId]) } catch { /* ignore */ }
-        setTimeout(() => process.exit(130), 3000)
+        try { await call('cancel', [taskId]) } catch { /* ignore */ }
+        // unref：收到 cancelled 帧后进程正常退出；仅卡住时 6s 兜底强退
+        setTimeout(() => process.exit(130), 6000).unref()
     }
     process.on('SIGINT', onSigint)
     process.on('SIGTERM', onSigint)
 
-    async function call<T>(method: string, args: unknown[]): Promise<T> {
+    async function call(method, args) {
         try {
-            return await callPd<T>(session, method, args)
+            return await callPd(session, method, args)
         } catch (e) {
             if (!(e instanceof CdpError)) throw e
             if (e.code !== 'CDP_DISCONNECTED') throw e
@@ -96,7 +65,7 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
             if (!await ensureTaskAlive(session, taskId)) {
                 throw new CdpError('TASK_LOST', `task ${taskId} not found after reconnect`)
             }
-            return await callPd<T>(session, method, args)
+            return await callPd(session, method, args)
         }
     }
 
@@ -108,10 +77,10 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
                 return exitFor('TIMEOUT')
             }
 
-            const tail = await call<TailResult>('tail', [taskId, lastSeq])
+            const tail = await call('tail', [taskId, lastSeq])
 
             // RingBuffer 溢出：buffer 最早帧 seq > lastSeq+1 表示老帧已被丢弃
-            if (tail.firstSeq > lastSeq + 1 && lastSeq > 0) {
+            if (tail.firstSeq > 0 && tail.firstSeq > lastSeq + 1) {
                 emitSynthetic(taskId, 'progress', {
                     kind: 'seq_skip',
                     expectedFrom: lastSeq + 1,
@@ -125,7 +94,7 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
                 if (f.type === 'result') return 0
                 if (f.type === 'cancelled') return exitFor('CANCELLED')
                 if (f.type === 'error') {
-                    const code = String((f.data as {code?: unknown}).code || 'UNKNOWN_ERROR')
+                    const code = String(f.data.code || 'UNKNOWN_ERROR')
                     return exitFor(code)
                 }
             }
@@ -135,7 +104,7 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
 
             if (Date.now() - lastStatusAt > opts.statusIntervalMs) {
                 try {
-                    const status = await call<StatusSnapshot | {error: string}>('status', [taskId])
+                    const status = await call('status', [taskId])
                     if ('error' in status) {
                         emitSynthetic(taskId, 'error', {code: 'TASK_LOST', message: status.error})
                         return exitFor('TASK_LOST')
@@ -150,14 +119,15 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
                         // tail 未收到终态帧（可能 buffer 溢出），用 status 兜底退出
                         emitSynthetic(taskId, 'progress', {kind: 'terminal_without_frame', status: status.status})
                         if (status.status === 'cancelled') return exitFor('CANCELLED')
-                        if (status.status === 'error') return exitFor('UNKNOWN_ERROR')
+                        if (status.status === 'error') return exitFor(status.errorCode || 'UNKNOWN_ERROR')
                         return 0
                     }
                 } catch (e) {
-                    if (e instanceof CdpError && (e.code === 'CDP_DISCONNECTED' || e.code === 'TASK_LOST')) {
+                    if (e instanceof CdpError) {
                         emitSynthetic(taskId, 'error', {code: e.code, message: e.message})
                         return exitFor(e.code)
                     }
+                    throw e
                 }
                 lastStatusAt = Date.now()
             }

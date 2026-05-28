@@ -1,4 +1,4 @@
-// 与 cli/ndjson.ts 中的 schema 保持一致
+// 与 cli/ndjson.mjs 中的 schema 保持一致
 
 export type TaskStatus = 'starting' | 'running' | 'done' | 'cancelled' | 'error' | 'orphaned'
 
@@ -48,6 +48,7 @@ export interface StatusSnapshot {
     isAlive: boolean
     lastLog: string
     lastSeq: number
+    errorCode: string | null
 }
 
 export interface DispatchContext {

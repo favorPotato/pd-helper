@@ -3,6 +3,7 @@ import {delay} from '../timing'
 import {RingBuffer} from './ring-buffer'
 import {clearMeta, loadAllMeta, persistMeta} from './persistence'
 import {registerBusinessDispatchers} from './business-dispatchers'
+import {ALL_PLATFORM_URLS} from './platforms'
 import type {
     DispatchContext,
     DispatchFn,
@@ -174,7 +175,7 @@ const builtinCsTest: DispatchFn = async (params, ctx) => {
         return
     }
     ctx.markPhase('locating_cs_tab')
-    const candidates = await chrome.tabs.query({url: ['*://*.tiktok.com/*', '*://*.instagram.com/*', '*://*.noxinfluencer.com/*']})
+    const candidates = await chrome.tabs.query({url: ALL_PLATFORM_URLS})
     const tab = candidates[0]
     if (!tab?.id) {
         ctx.setTabId(null)
@@ -333,7 +334,8 @@ function createFacade(): PdFacade {
                 etaSeconds: null,
                 isAlive: Date.now() - t.meta.lastActivityAt < ALIVE_WINDOW_MS,
                 lastLog,
-                lastSeq: t.meta.lastSeq
+                lastSeq: t.meta.lastSeq,
+                errorCode: t.meta.error?.code ?? null
             }
             return snap
         },
