@@ -1,7 +1,7 @@
 export default {
     manifest_version: 3,
     name: 'ig_helper',
-    version: '0.6.0',
+    version: '0.7.0',
     description: 'instagram 运营助手',
     permissions: [
         'scripting',
