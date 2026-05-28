@@ -351,6 +351,13 @@ function createFacade(): PdFacade {
                     // CS 可能已退出，忽略
                 }
             }
+            if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+                try {
+                    await chrome.runtime.sendMessage({type: 'pd:cancel', taskId})
+                } catch {
+                    // runtime 页可能不存在，忽略
+                }
+            }
             return {ok: true}
         },
 

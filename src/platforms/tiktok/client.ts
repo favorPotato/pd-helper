@@ -46,6 +46,8 @@ type ApiObject = Record<string, unknown>
 
 declare const chrome: typeof globalThis.chrome
 
+const TK_CAPTCHA_MARKER = '[CAPTCHA]'
+
 declare global {
     interface Window {
         __TK_PAGE_BRIDGE_READY__?: boolean
@@ -88,6 +90,9 @@ function parseJsonText<T>(text: string, contentType: string): T {
     if (!trimmed) {
         throw new Error('响应体为空')
     }
+    if (detectTkCaptchaText(trimmed)) {
+        throw new Error(`${TK_CAPTCHA_MARKER} TikTok API 命中人机验证`)
+    }
 
     const normalizedType = contentType.toLowerCase()
     const looksLikeJson = trimmed.startsWith('{') || trimmed.startsWith('[')
@@ -100,6 +105,10 @@ function parseJsonText<T>(text: string, contentType: string): T {
     } catch (error) {
         throw new Error(`JSON 解析失败: ${error instanceof Error ? error.message : String(error)}`)
     }
+}
+
+function detectTkCaptchaText(text: string): boolean {
+    return /captcha-verify-container|captcha-verify-container-main-page|captcha_verify|secsdk-captcha|secsdk-captcha-drag-icon|Drag the puzzle piece into place|TUXModal/i.test(text)
 }
 
 function registerPageFetchHandler(): void {
@@ -197,6 +206,10 @@ async function pageFetch(url: string, init: RequestInit = {}, timeoutMs = 15000)
         pageFetchPending.set(requestId, {resolve, reject, timer})
         window.postMessage({type: 'tk/page_fetch', requestId, url, init}, '*')
     })
+
+    if (detectTkCaptchaText(payload.text || '')) {
+        throw new Error(`${TK_CAPTCHA_MARKER} TikTok 响应命中人机验证`)
+    }
 
     if (!payload.ok) {
         throw new Error(`请求失败: ${payload.status || 'unknown'}`)

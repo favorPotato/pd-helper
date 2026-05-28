@@ -1,4 +1,4 @@
-type Platform = 'tiktok' | 'instagram' | 'nox' | 'unknown';
+type Platform = 'tiktok' | 'instagram' | 'nox' | 'runtime' | 'unknown';
 
 interface OverlayButton {
     text: string;
@@ -113,6 +113,7 @@ export class FixedOverlay {
       .status.tiktok { background: #1a1a1a; color: #fff; }
       .status.instagram { background: linear-gradient(45deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888); color: #fff; }
       .status.nox { background: #ff6b35; color: #fff; }
+      .status.runtime { background: #111821; color: #d7dde7; border: 1px solid #243244; }
       .status.unknown { background: #e0e0e0; color: #666; }
       
       .buttons {
@@ -202,6 +203,10 @@ export class FixedOverlay {
         background: #ff6b35;
         box-shadow: 0 6px 18px rgba(255, 107, 53, 0.35);
       }
+      :host([data-pd-helper-collapsed="true"][data-pd-helper-platform="runtime"]) .card {
+        background: #111821;
+        box-shadow: 0 6px 18px rgba(17,24,33,0.35);
+      }
       :host([data-pd-helper-collapsed="true"][data-pd-helper-platform="unknown"]) .card {
         background: #444;
       }
@@ -269,6 +274,7 @@ export class FixedOverlay {
         if (this.platform === 'instagram') return 'IG';
         if (this.platform === 'tiktok') return 'TK';
         if (this.platform === 'nox') return 'NOX';
+        if (this.platform === 'runtime') return 'PD';
         return 'IG';
     }
 

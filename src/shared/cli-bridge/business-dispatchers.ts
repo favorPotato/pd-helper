@@ -9,6 +9,9 @@ import {
     NOX_COLLECT_TIKTOK_POOL_REMOTE,
     NOX_PAUSE_AUTO_COLLECT_REMOTE,
     NOX_RESUME_AUTO_COLLECT_REMOTE,
+    PD_RUNTIME_DISPATCH,
+    PD_RUNTIME_PING,
+    type PdRuntimeDispatchResponse,
     TK_BATCH_COLLECT_REMOTE,
     TK_BRIDGE_TO_IG_REMOTE,
     TK_COLLECT_REMOTE,
@@ -24,6 +27,7 @@ interface PlatformSpec {
 const PLATFORM_TIKTOK: PlatformSpec = {name: 'tiktok', urls: ['*://*.tiktok.com/*']}
 const PLATFORM_INSTAGRAM: PlatformSpec = {name: 'instagram', urls: ['*://*.instagram.com/*']}
 const PLATFORM_NOX: PlatformSpec = {name: 'noxinfluencer', urls: ['*://*.noxinfluencer.com/*']}
+const RUNTIME_PAGE = 'runtime.html'
 
 async function findTab(spec: PlatformSpec): Promise<chrome.tabs.Tab | null> {
     if (typeof chrome === 'undefined' || !chrome.tabs?.query) return null
@@ -66,6 +70,90 @@ async function dispatchRemoteToTab(
         return
     }
     ctx.pushLog('progress', {message: `cs accepted: ${JSON.stringify(ack)}`})
+}
+
+async function waitForTabComplete(tabId: number, timeoutMs = 15000): Promise<boolean> {
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+        const tab = await chrome.tabs.get(tabId)
+        if (tab.status === 'complete') return true
+        await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    return false
+}
+
+async function ensureRuntimeTab(): Promise<chrome.tabs.Tab> {
+    const runtimeUrl = chrome.runtime.getURL(RUNTIME_PAGE)
+    const tabs = (await chrome.tabs.query({})).filter(tab => tab.url === runtimeUrl)
+    if (tabs.length > 1) {
+        for (const extra of tabs.slice(1)) {
+            if (extra.id) void chrome.tabs.remove(extra.id).catch(() => undefined)
+        }
+    }
+    const existing = tabs[0]
+    if (existing?.id) {
+        await chrome.tabs.update(existing.id, {active: true})
+        return existing
+    }
+
+    const tab = await chrome.tabs.create({url: runtimeUrl, active: true})
+    if (!tab.id) throw new Error('pd-runtime tab missing id')
+    return tab
+}
+
+async function waitForRuntimeReady(tabId: number): Promise<void> {
+    await waitForTabComplete(tabId)
+    let lastError = 'pd-runtime not ready'
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+            const resp = await chrome.runtime.sendMessage({type: PD_RUNTIME_PING, runtimeTabId: tabId}) as {ok?: boolean} | undefined
+            if (resp?.ok) return
+        } catch (error) {
+            lastError = error instanceof Error ? error.message : String(error)
+        }
+        await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    throw new Error(lastError)
+}
+
+async function dispatchRemoteToRuntime(
+    ctx: DispatchContext,
+    remoteType: string,
+    payload: Record<string, unknown>
+): Promise<void> {
+    ctx.markPhase('locating_runtime_tab')
+    let tab: chrome.tabs.Tab
+    try {
+        tab = await ensureRuntimeTab()
+        if (!tab.id) throw new Error('pd-runtime tab missing id')
+        await waitForRuntimeReady(tab.id)
+    } catch (error) {
+        ctx.setTabId(null)
+        ctx.fail('RUNTIME_TAB_ERROR', error instanceof Error ? error.message : String(error))
+        return
+    }
+
+    ctx.setTabId(tab.id)
+    ctx.markPhase('messaging_runtime')
+    let ack: PdRuntimeDispatchResponse | undefined
+    try {
+        ack = await chrome.runtime.sendMessage({
+            ...payload,
+            type: PD_RUNTIME_DISPATCH,
+            runtimeTabId: tab.id,
+            remoteType,
+            taskId: ctx.taskId
+        }) as PdRuntimeDispatchResponse | undefined
+    } catch (error) {
+        ctx.fail('RUNTIME_TAB_ERROR', error instanceof Error ? error.message : String(error))
+        return
+    }
+
+    if (!ack?.ok || ack.accepted !== true) {
+        ctx.fail('UNKNOWN_ERROR', `pd-runtime did not accept: ${JSON.stringify(ack ?? null)}`)
+        return
+    }
+    ctx.pushLog('progress', {message: `pd-runtime accepted: ${JSON.stringify(ack)}`})
 }
 
 function strParam(raw: unknown): string {
@@ -124,7 +212,7 @@ const tkCollect: DispatchFn = async (params, ctx) => {
 }
 
 const tkBatchCollect: DispatchFn = async (params, ctx) => {
-    await dispatchRemoteToTab(ctx, PLATFORM_TIKTOK, TK_BATCH_COLLECT_REMOTE, {
+    await dispatchRemoteToRuntime(ctx, TK_BATCH_COLLECT_REMOTE, {
         batchSize: numParam(params.batchSize),
         maxVideoCount: numParam(params.maxVideoCount),
         sortType: params.sortType === 'hot' ? 'hot' : 'recent',

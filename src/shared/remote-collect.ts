@@ -9,6 +9,8 @@ export const TK_COLLECT_REMOTE = 'tk_collect_remote'
 export const TK_COLLECT_PROGRESS = 'tk_collect_progress'
 export const TK_PREPARE_PAGE_CONTEXT = 'tk_prepare_page_context'
 export const NOX_LOG = 'nox_log'
+export const PD_RUNTIME_DISPATCH = 'pd_runtime_dispatch'
+export const PD_RUNTIME_PING = 'pd_runtime_ping'
 
 export const TK_BATCH_COLLECT_REMOTE = 'tk_batch_collect_remote'
 export const TK_DOWNLOAD_VIDEO_REMOTE = 'tk_download_video_remote'
@@ -53,6 +55,7 @@ export interface TkCollectViaTabResponse {
     ok: boolean
     filename?: string
     videoCount?: number
+    collectedVideoIds?: string[]
     downloadSummary?: RemoteDownloadSummary
     error?: string
 }
@@ -61,6 +64,12 @@ export interface TkProfileMetricsResponse {
     ok: boolean
     qualifyingRate?: number
     postRate?: number
+    error?: string
+}
+
+export interface PdRuntimeDispatchResponse {
+    ok: boolean
+    accepted?: boolean
     error?: string
 }
 

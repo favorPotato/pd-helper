@@ -1,5 +1,5 @@
 import {build} from 'esbuild'
-import {mkdirSync, readFileSync, writeFileSync} from 'fs'
+import {copyFileSync, mkdirSync, readFileSync, writeFileSync} from 'fs'
 import manifest from '../src/manifest.js'
 
 mkdirSync('dist', {recursive: true})
@@ -45,8 +45,11 @@ const common = {
 await Promise.all([
     build({...common, entryPoints: ['src/shared/content.ts'], outfile: 'dist/content.js'}),
     build({...common, entryPoints: ['src/shared/background.ts'], outfile: 'dist/background.js'}),
-    build({...common, entryPoints: ['src/platforms/tiktok/page-bridge.ts'], outfile: 'dist/page-bridge.js'})
+    build({...common, entryPoints: ['src/platforms/tiktok/page-bridge.ts'], outfile: 'dist/page-bridge.js'}),
+    build({...common, entryPoints: ['src/runtime/runtime.ts'], outfile: 'dist/runtime.js'})
 ])
+
+copyFileSync('src/runtime/runtime.html', 'dist/runtime.html')
 
 let scriptApiPermission = ''
 

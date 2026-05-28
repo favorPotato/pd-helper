@@ -9,6 +9,10 @@ export interface CsRuntime {
 
 export type CsTask<R> = (rt: CsRuntime) => Promise<R>
 
+export interface RunFireAndForgetOptions {
+    onLog?(message: string): void
+}
+
 const HEARTBEAT_INTERVAL_MS = 10_000
 
 const cancelFlags = new Map<string, boolean>()
@@ -61,12 +65,13 @@ function readPdCode(error: unknown): string | undefined {
 }
 
 // 返回时已自动推 pd:done（不抛错），调用方无需 await
-export function runFireAndForget<R>(taskId: string, task: CsTask<R>): Promise<void> {
+export function runFireAndForget<R>(taskId: string, task: CsTask<R>, options: RunFireAndForgetOptions = {}): Promise<void> {
     ensureCancelListener()
     cancelFlags.set(taskId, false)
 
     let seq = 0
     const log = (message: string): void => {
+        options.onLog?.(String(message))
         seq += 1
         send({type: 'pd:log', taskId, seq, data: {message: String(message)}})
     }

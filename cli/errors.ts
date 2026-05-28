@@ -10,6 +10,7 @@ export const ERROR_EXIT: Record<string, number> = {
     TIMEOUT: 12,
     CHROME_NOT_FOUND: 13,
     TASK_LOST: 14,
+    CAPTCHA: 15,
     CANCELLED: 130
 }
 

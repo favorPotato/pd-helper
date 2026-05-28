@@ -12,9 +12,8 @@ import {enqueueUpdateStatus} from '../../shared/sheets-sync'
 import {
     runTkBatchCollect,
     syncTkCollectSuccess,
-    BatchAbortError,
     NO_QUALIFYING_VIDEO_ERROR,
-    type CollectExecutor
+    createTkBatchExecutor
 } from '../../shared/tk-batch-collect'
 import type {NoxInfluencer} from '../nox/types'
 import {
@@ -106,17 +105,22 @@ function initTikTokMessageHandler(): void {
                     const onDownloadFailed = (videoId: string) => reportRemoteCollectProgress(clientTabId, `下载失败：${videoId}，已跳过`)
                     const onLog = (message: string) => reportRemoteCollectProgress(clientTabId, message)
 
-                    const excludeVideoIds = await loadCollectedVideoIdSet()
-                    onLog(`已加载 ${excludeVideoIds.size} 个已采视频 ID 用于去重`)
+                    const hasRemoteExcludeVideoIds = Array.isArray(msg.excludeVideoIds)
+                    const excludeVideoIds: Set<string> = hasRemoteExcludeVideoIds
+                        ? new Set<string>((msg.excludeVideoIds as unknown[]).map((id) => String(id)).filter(Boolean))
+                        : await loadCollectedVideoIdSet()
+                    if (!hasRemoteExcludeVideoIds) onLog(`已加载 ${excludeVideoIds.size} 个已采视频 ID 用于去重`)
 
                     const result = username
                         ? await Collector.collectProfileByUsername(username, maxVideoCount, fromTs, toTs, filters, onSelectedCount, onDownloadProgress, onDownloadFailed, filenamePrefix, onLog, excludeVideoIds, remoteSortType)
                         : await Collector.collectCurrentProfile(maxVideoCount, fromTs, toTs, filters, onSelectedCount, onDownloadProgress, onDownloadFailed, filenamePrefix, onLog, excludeVideoIds, remoteSortType)
+                    const collectedVideoIds = (result.output.videos || []).map(v => v.videoId).filter(Boolean)
 
                     sendResponse({
                         ok: true,
                         filename: result.filename,
                         videoCount: result.output.videos?.length || 0,
+                        collectedVideoIds,
                         downloadSummary: result.downloadSummary
                     })
                 } catch (error) {
@@ -177,48 +181,11 @@ function initTikTokMessageHandler(): void {
             sendResponse({ok: true, accepted: true})
             void runFireAndForget(taskId, async (rt) => {
                 rt.throwIfCancelled()
-                const sharedExcludeVideoIds = await loadCollectedVideoIdSet()
-                rt.log(`已加载 ${sharedExcludeVideoIds.size} 个已采视频 ID 用于去重（全批共享）`)
-
-                const tkExecutor: CollectExecutor = {
-                    label: (_progress, inf) => `${inf.genderTag}${inf.name || `@${inf.username}`}`,
+                const tkExecutor = createTkBatchExecutor({
                     log: (m) => rt.log(m),
-                    collectOne: async (influencer, p) => {
-                        rt.throwIfCancelled()
-                        try {
-                            const metrics = await Collector.computeProfileMetricsByUsername(
-                                influencer.username,
-                                {minLikeRate: p.minLikeRate, maxDurationSec: p.maxDurationSec},
-                                (m) => rt.log(m)
-                            )
-                            await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                                qualifyingRate: metrics.qualifyingRate,
-                                postRate: metrics.postRate,
-                                updatedAt: new Date().toISOString()
-                            })
-                        } catch (error) {
-                            const errorMsg = truncateError(error instanceof Error ? error.message : String(error), 200)
-                            await chrome.runtime.sendMessage({type: 'reset_tk_tab'})
-                            throw new BatchAbortError(`指标预估失败：${errorMsg}`)
-                        }
-                        rt.throwIfCancelled()
-                        return await Collector.collectProfileByUsername(
-                            influencer.username,
-                            p.maxVideoCount,
-                            p.fromTs,
-                            p.toTs,
-                            {minLikeRate: p.minLikeRate, maxDurationSec: p.maxDurationSec},
-                            (selectedCount, targetCount) => rt.log(`入选 ${selectedCount}/${targetCount}`),
-                            (downloadedCount, selectedCount) => rt.log(`下载 ${downloadedCount}/${selectedCount}`),
-                            (videoId) => rt.log(`下载失败：${videoId}，已跳过`),
-                            influencer.genderTag,
-                            (m) => rt.log(m),
-                            sharedExcludeVideoIds,
-                            p.sortType
-                        )
-                    }
-                }
-
+                    label: (_progress, inf) => `${inf.genderTag}${inf.name || `@${inf.username}`}`,
+                    throwIfCancelled: () => rt.throwIfCancelled()
+                })
                 await runTkBatchCollect(tkExecutor, {
                     batchSize, fromTs, toTs, minLikeRate, maxDurationSec, sortType, maxVideoCount
                 })
@@ -518,46 +485,11 @@ async function batchCollectFromPool(): Promise<void> {
     await UiHelper.setBatchCollecting(true)
     try {
         UiHelper.log(`开始批量采集，目标 ${batchSize} 个博主，${new Date(fromTs).toISOString().slice(0,10)}~${new Date(toTs).toISOString().slice(0,10)}`)
-        const sharedExcludeVideoIds = await loadCollectedVideoIdSet()
-        UiHelper.log(`已加载 ${sharedExcludeVideoIds.size} 个已采视频 ID 用于去重（全批共享）`)
 
-        const tkExecutor: CollectExecutor = {
-            label: (_progress, inf) => `${inf.genderTag}${inf.name || `@${inf.username}`}`,
+        const tkExecutor = createTkBatchExecutor({
             log: (m) => UiHelper.log(m),
-            collectOne: async (influencer, p) => {
-                let metrics: { qualifyingRate: number; postRate: number } | null = null
-                try {
-                    metrics = await Collector.computeProfileMetricsByUsername(
-                        influencer.username,
-                        {minLikeRate: p.minLikeRate, maxDurationSec: p.maxDurationSec},
-                        (m) => UiHelper.log(m)
-                    )
-                    await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                        qualifyingRate: metrics.qualifyingRate,
-                        postRate: metrics.postRate,
-                        updatedAt: new Date().toISOString()
-                    })
-                } catch (error) {
-                    const errorMsg = truncateError(error instanceof Error ? error.message : String(error), 200)
-                    await chrome.runtime.sendMessage({type: 'reset_tk_tab'})
-                    throw new BatchAbortError(`指标预估失败：${errorMsg}`)
-                }
-                return await Collector.collectProfileByUsername(
-                    influencer.username,
-                    p.maxVideoCount,
-                    p.fromTs,
-                    p.toTs,
-                    {minLikeRate: p.minLikeRate, maxDurationSec: p.maxDurationSec},
-                    (selectedCount, targetCount) => UiHelper.log(`入选 ${selectedCount}/${targetCount}`),
-                    (downloadedCount, selectedCount) => UiHelper.log(`下载 ${downloadedCount}/${selectedCount}`),
-                    (videoId) => UiHelper.log(`下载失败：${videoId}，已跳过`),
-                    influencer.genderTag,
-                    (m) => UiHelper.log(m),
-                    sharedExcludeVideoIds,
-                    p.sortType
-                )
-            }
-        }
+            label: (_progress, inf) => `${inf.genderTag}${inf.name || `@${inf.username}`}`
+        })
 
         await runTkBatchCollect(tkExecutor, {
             batchSize,

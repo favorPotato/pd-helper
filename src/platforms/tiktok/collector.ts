@@ -402,6 +402,20 @@ function toPublicVideo(video: CollectedVideo): TikTokVideo {
     return publicVideo
 }
 
+const TK_CAPTCHA_MARKER = '[CAPTCHA]'
+
+export class TkCaptchaError extends Error {
+    public readonly pdCode = 'CAPTCHA'
+    constructor(message: string) {
+        super(`${TK_CAPTCHA_MARKER} ${message}`)
+        this.name = 'TkCaptchaError'
+    }
+}
+
+function detectTkCaptcha(html: string): boolean {
+    return /captcha-verify-container|captcha-verify-container-main-page|captcha_verify|secsdk-captcha|secsdk-captcha-drag-icon|Drag the puzzle piece into place|TUXModal/i.test(html)
+}
+
 async function loadProfileContext(username: string): Promise<{
     username: string;
     user: TikTokUser;
@@ -415,7 +429,10 @@ async function loadProfileContext(username: string): Promise<{
     const html = await fetchHtml(profileUrl)
     const scriptText = extractScriptContentById(html, '__UNIVERSAL_DATA_FOR_REHYDRATION__')
         || extractScriptContentById(html, '__UNIVERSAL_DATA_FOR_VAR__')
-    if (!scriptText) throw new Error('未找到主页 JSON 容器')
+    if (!scriptText) {
+        if (detectTkCaptcha(html)) throw new TkCaptchaError(`@${normalizedUsername} 命中 TikTok 人机验证`)
+        throw new Error('未找到主页 JSON 容器')
+    }
 
     const jsonData = JSON.parse(scriptText)
 
@@ -547,6 +564,7 @@ async function collectVideos(
                 comments = commentResult.comments
                 commentSummary = commentResult.summary
             } catch (error) {
+                if (error instanceof Error && error.message.includes(TK_CAPTCHA_MARKER)) throw error
                 console.warn('[TikTok] fetch comments failed', videoId, error)
             }
 

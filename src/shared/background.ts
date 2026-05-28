@@ -346,14 +346,15 @@ async function ensureIgTabReady(windowId?: number): Promise<{ok: true; tab: chro
     return prepared
 }
 
-async function ensureTikTokTabReady(returnToTabId?: number, targetUrl?: string, windowId?: number): Promise<{ok: true; tab: chrome.tabs.Tab; href: string} | {ok: false; reason: string; error: string}> {
+async function ensureTikTokTabReady(returnToTabId?: number, targetUrl?: string, windowId?: number, excludeTabId?: number): Promise<{ok: true; tab: chrome.tabs.Tab; href: string} | {ok: false; reason: string; error: string}> {
     const prepared = await ensureTabReady(TK_TAB, {
         activate: true,
         readySelector: '#app',
         returnToTabId,
         selectorTimeoutMs: 15000,
         targetUrl,
-        windowId
+        windowId,
+        excludeTabId
     })
     if (!prepared.ok) {
         return {ok: false, reason: 'tk_tab_error', error: prepared.error}
@@ -664,7 +665,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.type === PREPARE_TK_TAB) {
         ;(async () => {
             const targetUrl = typeof request.url === 'string' ? request.url : undefined
-            const prepared = await ensureTikTokTabReady(sender.tab?.id, targetUrl, sender.tab?.windowId)
+            const prepared = await ensureTikTokTabReady(sender.tab?.id, targetUrl, sender.tab?.windowId, sender.tab?.id)
             if (!prepared.ok) {
                 sendResponse({ok: false, reason: prepared.reason, error: prepared.error})
                 return
@@ -710,6 +711,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     } catch {
                         removeFailed += 1
                     }
+                }
+                if (removeFailed > 0) {
+                    sendResponse({ok: false, error: `cookie_remove_failed:${removeFailed}`, removed: cookies.length - removeFailed, removeFailed, closedTabs: 0})
+                    return
                 }
                 await chrome.tabs.remove(tabId)
                 sendResponse({ok: true, removed: cookies.length - removeFailed, removeFailed, closedTabs: 1})
@@ -783,7 +788,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     startYear: request.startYear,
                     endYear: request.endYear,
                     filenamePrefix: request.filenamePrefix,
-                    sortType: request.sortType
+                    sortType: request.sortType,
+                    excludeVideoIds: request.excludeVideoIds
                 })
                 sendResponse(result)
             } catch (error) {

@@ -1,7 +1,6 @@
 import {showDialog} from '../../shared/custom-dialog'
 import {TK_BATCH_COLLECT_FIELDS} from '../../shared/tk-collect-fields'
 import {truncateError} from '../../shared/errors'
-import {safeSendMessage} from '../../shared/messaging'
 import {
     isNoxLogMessage,
     NOX_AUTO_COLLECT_REMOTE,
@@ -9,21 +8,12 @@ import {
     NOX_COLLECT_AUDIENCE_REMOTE,
     NOX_COLLECT_TIKTOK_POOL_REMOTE,
     NOX_PAUSE_AUTO_COLLECT_REMOTE,
-    NOX_RESUME_AUTO_COLLECT_REMOTE,
-    PREPARE_TK_TAB,
-    type PrepareTkTabResponse,
-    TK_COLLECT_VIA_TAB,
-    TK_PROFILE_METRICS_VIA_TAB,
-    type TkProfileMetricsResponse,
-    type TkCollectViaTabResponse
+    NOX_RESUME_AUTO_COLLECT_REMOTE
 } from '../../shared/remote-collect'
 import {runFireAndForget} from '../../shared/cli-bridge/cs-runtime'
 import {sleepRandom} from '../../shared/timing'
-import {enqueueUpdateStatus, enqueueUpsertInfluencers} from '../../shared/sheets-sync'
-import {
-    runTkBatchCollect,
-    type CollectExecutor
-} from '../../shared/tk-batch-collect'
+import {enqueueUpsertInfluencers} from '../../shared/sheets-sync'
+import {runTkBatchCollect, createTkBatchExecutor} from '../../shared/tk-batch-collect'
 import {checkAppsScriptHealth} from '../../shared/apps-script-client'
 import {callAppsScript} from '../../shared/apps-script-client'
 import {fetchAudienceProfile} from './client'
@@ -162,72 +152,11 @@ function initNoxMessageHandler(): void {
                 tkCollectInProgress = true
                 await UiHelper.setBusyState({tkCollecting: true})
                 try {
-                    let tkTabId = 0
-                    const ensureTabAt = async (username: string): Promise<void> => {
-                        const profileUrl = `https://www.tiktok.com/@${username}`
-                        const prepared = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB, url: profileUrl})
-                        if (!prepared?.ok || !prepared.tabId) {
-                            throw new Error(`TikTok 执行页不可用: ${prepared?.error || '未知错误'}`)
-                        }
-                        tkTabId = prepared.tabId
-                        rt.log(`TikTok 执行页就绪: ${prepared.href || profileUrl}`)
-                    }
-
-                    const noxExecutor: CollectExecutor = {
-                        label: (_progress, inf) => `${inf.genderTag}${buildInfluencerLabel(inf)}`,
+                    const noxExecutor = createTkBatchExecutor({
                         log: (m) => rt.log(m),
-                        collectOne: async (influencer, p) => {
-                            rt.throwIfCancelled()
-                            if (!tkTabId) await ensureTabAt(influencer.username)
-
-                            const runMetrics = async () => safeSendMessage<TkProfileMetricsResponse>({
-                                type: TK_PROFILE_METRICS_VIA_TAB,
-                                tabId: tkTabId,
-                                username: influencer.username,
-                                minLikeRate: p.minLikeRate,
-                                maxDurationSec: p.maxDurationSec
-                            })
-
-                            let metricsResult = await runMetrics()
-                            if (!metricsResult?.ok) {
-                                const errorMsg = metricsResult?.error || '指标预估失败'
-                                if (errorMsg.includes('当前博主已关闭评论功能')) throw new Error(errorMsg)
-                                rt.log(`${errorMsg}，重建 TK tab 后重试...`)
-                                const resetResult = await safeSendMessage<{ok: boolean; closedTabs?: number; removed?: number; removeFailed?: number; error?: string}>({type: 'reset_tk_tab', tabId: tkTabId})
-                                if (!resetResult?.ok) throw new Error(`TK tab 重建失败: ${resetResult?.error || 'reset_tk_tab 无响应'}`)
-                                rt.log(`TK tab 重建完成`)
-                                tkTabId = 0
-                                await ensureTabAt(influencer.username)
-                                metricsResult = await runMetrics()
-                                if (!metricsResult?.ok) throw new Error(`指标预估重试仍失败：${metricsResult?.error || errorMsg}`)
-                            }
-
-                            await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                                qualifyingRate: metricsResult.qualifyingRate,
-                                postRate: metricsResult.postRate ?? '',
-                                updatedAt: new Date().toISOString()
-                            })
-
-                            const collectResult = await safeSendMessage<TkCollectViaTabResponse>({
-                                type: TK_COLLECT_VIA_TAB,
-                                tabId: tkTabId,
-                                username: influencer.username,
-                                maxVideoCount: p.maxVideoCount,
-                                fromTs: p.fromTs,
-                                toTs: p.toTs,
-                                minLikeRate: p.minLikeRate,
-                                maxDurationSec: p.maxDurationSec,
-                                filenamePrefix: influencer.genderTag,
-                                sortType: p.sortType
-                            })
-
-                            if (!collectResult?.ok) throw new Error(collectResult?.error || '采集失败')
-                            return {
-                                filename: collectResult.filename,
-                                downloadSummary: collectResult.downloadSummary || {succeeded: 0, attempted: 0, failed: 0}
-                            }
-                        }
-                    }
+                        label: (_progress, inf) => `${inf.genderTag}${buildInfluencerLabel(inf)}`,
+                        throwIfCancelled: () => rt.throwIfCancelled()
+                    })
 
                     await runTkBatchCollect(noxExecutor, {batchSize, fromTs, toTs, minLikeRate, maxDurationSec, sortType, maxVideoCount})
                     return {batchSize, completed: true}
@@ -462,84 +391,10 @@ async function collectFromTikTokPool(): Promise<void> {
     tkCollectInProgress = true
     await UiHelper.setBusyState({tkCollecting: true})
     try {
-        let tkTabId = 0
-
-        const ensureTabAt = async (username: string): Promise<void> => {
-            const profileUrl = `https://www.tiktok.com/@${username}`
-            const prepared = await safeSendMessage<PrepareTkTabResponse>({type: PREPARE_TK_TAB, url: profileUrl})
-            if (!prepared?.ok || !prepared.tabId) {
-                throw new Error(`TikTok 执行页不可用: ${prepared?.error || '未知错误'}`)
-            }
-            tkTabId = prepared.tabId
-            UiHelper.log(`TikTok 执行页就绪: ${prepared.href || profileUrl}`)
-        }
-
-        const noxExecutor: CollectExecutor = {
-            label: (_progress, inf) => `${inf.genderTag}${buildInfluencerLabel(inf)}`,
+        const noxExecutor = createTkBatchExecutor({
             log: (m) => UiHelper.log(m),
-            collectOne: async (influencer, p) => {
-                if (!tkTabId) {
-                    await ensureTabAt(influencer.username)
-                }
-
-                const runMetrics = async () => safeSendMessage<TkProfileMetricsResponse>({
-                    type: TK_PROFILE_METRICS_VIA_TAB,
-                    tabId: tkTabId,
-                    username: influencer.username,
-                    minLikeRate: p.minLikeRate,
-                    maxDurationSec: p.maxDurationSec,
-                })
-
-                let metricsResult = await runMetrics()
-                if (!metricsResult?.ok) {
-                    const errorMsg = metricsResult?.error || '指标预估失败'
-                    if (errorMsg.includes('当前博主已关闭评论功能')) {
-                        throw new Error(errorMsg)
-                    }
-                    UiHelper.log(`${errorMsg}，重建 TK tab 后重试...`)
-                    const resetResult = await safeSendMessage<{ok: boolean; closedTabs?: number; removed?: number; removeFailed?: number; error?: string}>({type: 'reset_tk_tab', tabId: tkTabId})
-                    if (!resetResult?.ok) {
-                        throw new Error(`TK tab 重建失败: ${resetResult?.error || 'reset_tk_tab 无响应'}`)
-                    }
-                    UiHelper.log(`TK tab 重建完成: 关闭 ${resetResult.closedTabs || 0} 个 tab，清理 ${resetResult.removed || 0} 个 cookie`)
-                    tkTabId = 0
-                    await ensureTabAt(influencer.username)
-                    metricsResult = await runMetrics()
-                    if (!metricsResult?.ok) {
-                        throw new Error(`指标预估重试仍失败：${metricsResult?.error || errorMsg}`)
-                    }
-                }
-
-                const metricsSummary = metricsResult.qualifyingRate != null ? `${(metricsResult.qualifyingRate * 100).toFixed(1)}%` : ''
-                await enqueueUpdateStatus('tiktok', influencer.channelId, {
-                    qualifyingRate: metricsResult.qualifyingRate,
-                    postRate: metricsResult.postRate ?? '',
-                    updatedAt: new Date().toISOString()
-                })
-
-                const collectResult = await safeSendMessage<TkCollectViaTabResponse>({
-                    type: TK_COLLECT_VIA_TAB,
-                    tabId: tkTabId,
-                    username: influencer.username,
-                    maxVideoCount: p.maxVideoCount,
-                    fromTs: p.fromTs,
-                    toTs: p.toTs,
-                    minLikeRate: p.minLikeRate,
-                    maxDurationSec: p.maxDurationSec,
-                    filenamePrefix: influencer.genderTag,
-                    sortType: p.sortType,
-                })
-
-                if (!collectResult?.ok) {
-                    throw new Error(collectResult?.error || '采集失败')
-                }
-                if (metricsSummary) UiHelper.log(`合格率 ${metricsSummary}`)
-                return {
-                    filename: collectResult.filename,
-                    downloadSummary: collectResult.downloadSummary || {succeeded: 0, attempted: 0, failed: 0}
-                }
-            }
-        }
+            label: (_progress, inf) => `${inf.genderTag}${buildInfluencerLabel(inf)}`
+        })
 
         await runTkBatchCollect(noxExecutor, {
             batchSize,
