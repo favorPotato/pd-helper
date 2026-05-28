@@ -5,6 +5,7 @@ import {CdpError} from './transport.mjs'
 import {exitFor} from './codes.mjs'
 import {emit, emitSynthetic, ttyLog, numFlag} from './io.mjs'
 import {runCall} from './loop.mjs'
+import {runSheetCommand} from './sheet.mjs'
 
 // EPIPE 守卫：下游提前关闭管道时干净退出，否则默认抛 Unhandled error
 for (const s of [process.stdout, process.stderr]) {
@@ -19,6 +20,11 @@ async function main() {
     if (!args.cmd || args.cmd === '-h' || args.cmd === '--help' || args.cmd === 'help') {
         process.stdout.write(usage())
         return 0
+    }
+
+    // attach 前路由：sheet 不经 SW/CDP
+    if (args.cmd === 'sheet') {
+        return await runSheetCommand(args)
     }
 
     // noinspection JSUnresolvedReference,JSUnresolvedVariable -- flags 由 parseArgs 动态填充，.cdp 来自 --cdp 命令行参数

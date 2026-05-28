@@ -61,6 +61,7 @@ Commands:
   status <taskId>                     Snapshot a task's progress
   cancel <taskId>                     Cancel a task
   methods                             List available methods
+  sheet <action> [--param k=v ...]    Call an Apps Script / Google Sheets action directly (HTTP, no browser); complex payloads via --payload '<json>'
   dev-reload                          Reload the extension SW and refresh matching tabs (dev only)
 
 Global options:
@@ -73,5 +74,7 @@ Global options:
 Examples:
   pd-helper-cli call ping --param count=5 --param interval=300 --cdp http://127.0.0.1:31402
   pd-helper-cli methods
+  pd-helper-cli sheet loadInfluencersByStatus --param platform=tiktok --param status=unused
+  pd-helper-cli sheet upsertNoxPage --payload '{"url":"https://...","pageNum":3}'
 `
 }
