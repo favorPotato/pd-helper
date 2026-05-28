@@ -1,5 +1,3 @@
-// cli-bridge —— CS 端 fire-and-forget 通用 runner
-// 由各平台 remote handler 复用：自动起心跳、监听 pd:cancel、推 pd:done、按需推 pd:log
 
 export interface CsRuntime {
     readonly taskId: string
@@ -50,7 +48,7 @@ export class CancelledError extends Error implements WithPdCode {
     }
 }
 
-// 业务可在异常上挂 pdCode 让 runFireAndForget 透传到 pd:done.error.code
+// 在异常上挂 pdCode，runFireAndForget 会将其透传到 pd:done.error.code
 export function withPdCode<E extends Error>(error: E, code: string): E {
     ;(error as E & WithPdCode).pdCode = code
     return error
@@ -62,12 +60,7 @@ function readPdCode(error: unknown): string | undefined {
     return typeof code === 'string' ? code : undefined
 }
 
-/**
- * 在 CS 内以 fire-and-forget 模式跑一个任务。
- * - taskId：与 SW 端 dispatch 同步的 task UUID
- * - task：业务逻辑；通过 rt.log/pushLog 推进度，throwIfCancelled 主动响应取消
- * 返回时已自动推 pd:done（不抛错）；调用方无需 await（但 await 也无副作用）
- */
+// 返回时已自动推 pd:done（不抛错），调用方无需 await
 export function runFireAndForget<R>(taskId: string, task: CsTask<R>): Promise<void> {
     ensureCancelListener()
     cancelFlags.set(taskId, false)
@@ -96,7 +89,7 @@ export function runFireAndForget<R>(taskId: string, task: CsTask<R>): Promise<vo
         }
     }
 
-    // 屏蔽 alert/confirm/prompt 防止业务函数阻塞 fire-and-forget 链路（CLI 视角下没人能点确认）
+    // CLI 无人交互，屏蔽 alert/confirm/prompt 防止阻塞
     const win = (typeof window !== 'undefined' ? window : undefined) as (Window & typeof globalThis) | undefined
     const origAlert = win?.alert
     const origConfirm = win?.confirm

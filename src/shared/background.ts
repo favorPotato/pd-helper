@@ -43,14 +43,14 @@ import {ingestHeartbeat, ingestRemoteLog, installPdFacade, markTaskDone} from '.
 // globalThis.__pd 已经就绪
 installPdFacade()
 
-// Bridge lock to prevent multi-tab race conditions
+// 防多 tab 并发竞争的桥接锁
 let bridgeLock = {held: false, since: 0}
-const LOCK_TTL_MS = 2 * 60 * 1000 // 2 minutes
+const LOCK_TTL_MS = 2 * 60 * 1000
 
 function acquireLock(): boolean {
     const now = Date.now()
     if (bridgeLock.held && now - bridgeLock.since < LOCK_TTL_MS) {
-        return false // Lock held and not expired
+        return false
     }
     bridgeLock = {held: true, since: now}
     return true

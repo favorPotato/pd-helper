@@ -1,5 +1,4 @@
-// chrome.storage.session 兜底持久化：仅元数据，不存日志
-// 用途：SW 被杀重启后能识别 orphaned 任务
+// chrome.storage.session 兜底持久化（仅元数据）：SW 重启后识别 orphaned 任务
 
 import type {TaskMeta} from './types'
 
@@ -18,7 +17,7 @@ export async function persistMeta(meta: TaskMeta, opts?: {throttle?: boolean}): 
     try {
         await chrome.storage.session.set({[KEY_PREFIX + meta.taskId]: meta})
     } catch {
-        // ignore: session 不可写时直接放弃，不影响主流程
+        // session 不可写时放弃，不影响主流程
     }
 }
 

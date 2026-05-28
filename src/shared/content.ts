@@ -32,7 +32,6 @@ async function start(): Promise<void> {
                 return
             }
 
-            // cli-bridge —— CS 链路冒烟用：收到后立即 ack，异步推 pd:log/pd:done
             if (msg?.type === 'pd:csTest' && typeof msg.taskId === 'string') {
                 const taskId = msg.taskId
                 const count = Math.max(1, Math.min(5, Number(msg.count) || 3))

@@ -1,5 +1,3 @@
-// pd-helper-cli call 主循环
-
 import type {AttachedSession} from './cdp'
 import {callPd, CdpError, reconnectSession} from './cdp'
 import {emit, emitSynthetic, ttyLog, type LogFrame} from './ndjson'
@@ -40,7 +38,6 @@ interface StatusSnapshot {
 
 const TERMINAL_STATUS = new Set(['done', 'cancelled', 'error', 'orphaned'])
 
-// 指数退避重连：500ms / 1s / 2s 共三次
 async function tryReconnect(session: AttachedSession): Promise<boolean> {
     for (let i = 0; i < 3; i += 1) {
         const wait = 500 * (1 << i)
@@ -89,7 +86,6 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
     process.on('SIGINT', onSigint)
     process.on('SIGTERM', onSigint)
 
-    // 把所有 CDP_DISCONNECTED 统一转成"重连一次再重试"
     async function call<T>(method: string, args: unknown[]): Promise<T> {
         try {
             return await callPd<T>(session, method, args)
@@ -114,7 +110,7 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
 
             const tail = await call<TailResult>('tail', [taskId, lastSeq])
 
-            // RingBuffer 溢出侦测：若 buffer 最早一帧 seq > lastSeq+1，说明老帧被丢
+            // RingBuffer 溢出：buffer 最早帧 seq > lastSeq+1 表示老帧已被丢弃
             if (tail.firstSeq > lastSeq + 1 && lastSeq > 0) {
                 emitSynthetic(taskId, 'progress', {
                     kind: 'seq_skip',
@@ -145,13 +141,13 @@ export async function runCall(session: AttachedSession, opts: RunOpts): Promise<
                         return exitFor('TASK_LOST')
                     }
                     emitSynthetic(taskId, 'progress', {kind: 'status', ...status})
-                    // 终态退出：SW 重启后 orphaned 任务永远不会产帧，必须由 status 判退
+                    // SW 重启后 orphaned 任务永远不会产帧，只能由 status 判退
                     if (TERMINAL_STATUS.has(status.status)) {
                         if (status.status === 'orphaned') {
                             emitSynthetic(taskId, 'error', {code: 'TASK_LOST', message: 'task became orphaned (SW restarted, buffer lost)'})
                             return exitFor('TASK_LOST')
                         }
-                        // done/cancelled/error 但 tail 没拿到终态帧（可能 buffer 溢出）：用 status 兜底退出
+                        // tail 未收到终态帧（可能 buffer 溢出），用 status 兜底退出
                         emitSynthetic(taskId, 'progress', {kind: 'terminal_without_frame', status: status.status})
                         if (status.status === 'cancelled') return exitFor('CANCELLED')
                         if (status.status === 'error') return exitFor('UNKNOWN_ERROR')

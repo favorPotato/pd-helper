@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-// pd-helper-cli 入口
 
 import {attachToServiceWorker, callPd, CdpError, connectWs, type AttachedSession} from './cdp'
 import {emit, emitSynthetic, ttyLog} from './ndjson'
@@ -14,8 +13,7 @@ interface Argv {
     params: Record<string, unknown>
 }
 
-// 无值的 bool flag 白名单：parser 不消耗后续 token 作为它们的值
-// 这样 `list --all <taskId>` 仍把 <taskId> 留给 rest，而非吞作 --all 的值
+// 无值 bool flag 白名单：避免 `list --all <taskId>` 中 <taskId> 被吞作 --all 的值
 const BOOL_FLAGS: ReadonlySet<string> = new Set(['all', 'help'])
 
 function parseArgs(raw: string[]): Argv {
@@ -144,7 +142,6 @@ async function main(): Promise<number> {
                 return 0
             }
             case 'dev-reload': {
-                // 1) SW evaluate chrome.runtime.reload()
                 try {
                     await session.conn.send('Runtime.evaluate', {
                         expression: 'chrome.runtime.reload()',
@@ -153,11 +150,10 @@ async function main(): Promise<number> {
                         userGesture: false
                     }, session.sessionId)
                 } catch {
-                    // SW 重启时 evaluate 会被打断，可忽略
+                    // SW 重启时 evaluate 被打断，可忽略
                 }
                 ttyLog('[pd-helper-cli] SW reload triggered')
 
-                // 2) 刷新所有 pd-helper cs 匹配的 tab，让新版 cs 注入
                 const sw = cdpUrl.replace(/\/+$/, '')
                 let refreshed = 0
                 try {

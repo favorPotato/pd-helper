@@ -41,5 +41,3 @@ export function formatExtraData(extra: Record<string, unknown>): string {
     }
     return lines.join('\n')
 }
-
-

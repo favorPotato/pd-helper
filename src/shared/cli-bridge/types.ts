@@ -1,4 +1,3 @@
-// cli-bridge —— 类型定义
 // 与 cli/ndjson.ts 中的 schema 保持一致
 
 export type TaskStatus = 'starting' | 'running' | 'done' | 'cancelled' | 'error' | 'orphaned'
@@ -51,9 +50,6 @@ export interface StatusSnapshot {
     lastSeq: number
 }
 
-// dispatch 函数签名：在 SW 内被调用
-// 约定：dispatch 函数自己负责通过 pushLog 推进度/结果。
-// tabId 通过 ctx.setTabId 异步通告；__pd.call 会等首次 setTabId 或 dispatch 结束（含 1s 上限），再把 tabId 返回给调用方
 export interface DispatchContext {
     taskId: string
     pushLog: (type: FrameType, data: Record<string, unknown>) => void
@@ -77,7 +73,7 @@ export interface PdFacade {
     register: (method: string, fn: DispatchFn) => void
 }
 
-// TS 全局声明只能用 var；let/const 在 declare global 里语义不对
+// declare global 里只能用 var，let/const 语义不对
 declare global {
     // noinspection ES6ConvertVarToLetConst
     // eslint-disable-next-line no-var

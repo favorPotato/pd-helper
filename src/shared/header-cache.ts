@@ -1,9 +1,5 @@
-// Capture/cache these headers to align our requests with a real Instagram web tab.
-// - claim: x-ig-www-claim
-// - ajax: x-instagram-ajax
-// - session-id: x-web-session-id
-// Note: x-web-session-id is a client-side web identifier and is NOT the auth cookie `sessionid`.
-// These headers are for request-shape parity only and are not proven to be the root cause of upload failures.
+// 注意：x-web-session-id 是客户端 web 标识，不是 auth cookie `sessionid`
+// 这些头仅用于对齐请求形态，未证实是上传失败的根因
 const CACHE_KEYS = ['x-ig-www-claim', 'x-instagram-ajax', 'x-web-session-id'] as const
 const STORAGE_KEY = 'ig_bridge_header_cache_v1'
 

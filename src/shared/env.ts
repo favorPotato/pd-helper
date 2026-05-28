@@ -18,7 +18,6 @@ function readInt(name: string, value: string): number {
     return parsed
 }
 
-
 export const SCRIPT_API_BASE = normalizeBaseUrl(__SCRIPT_API_BASE__)
 export const SCRIPT_API_KEY = __SCRIPT_API_KEY__.trim()
 export const MEDIA_PROMPT = __MEDIA_PROMPT__

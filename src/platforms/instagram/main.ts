@@ -474,7 +474,6 @@ function initIgRemoteHandler(): void {
 
 export function setup() {
     initIgRemoteHandler()
-    // 初始化UI
     void UiHelper.inject({
         onManualAnalyze: runManualAnalysisWorkflow,
         onGenerateScript: runGenerateScriptWorkflow,

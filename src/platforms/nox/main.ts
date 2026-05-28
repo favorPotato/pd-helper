@@ -256,7 +256,6 @@ function initNoxMessageHandler(): void {
             sendResponse({ok: true, accepted: true})
             void runFireAndForget(taskId, async (rt) => {
                 rt.throwIfCancelled()
-                // 从当前 noxinfluencer 搜索页 URL 自动读取筛选条件
                 const baseParams = readBaseParamsFromUrl()
                 rt.log(`启动自动采集：目标 ${targetCount}，画像=${collectProfile}，起始页 ${startPageNum}`)
                 rt.log(`base params: ${JSON.stringify(baseParams)}`)

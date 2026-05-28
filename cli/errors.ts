@@ -1,6 +1,4 @@
-// 错误码 → exit code 映射
-// 与 .claude/plans/cli-extension-bridge.md §7.3 对齐
-
+// 错误码 → exit code 映射，与 cli-extension-bridge.md §7.3 对齐
 export const ERROR_EXIT: Record<string, number> = {
     UNKNOWN_ERROR: 1,
     LOGIN_REQUIRED: 2,

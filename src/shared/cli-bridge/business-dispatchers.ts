@@ -1,10 +1,3 @@
-// cli-bridge —— 业务 dispatch 注册中心
-// 全部 dispatch 走 fire-and-forget：
-//   1) SW 端 chrome.tabs.query 找匹配 tab（找不到 ctx.fail TAB_CLOSED）
-//   2) ctx.setTabId(tab.id) 通告
-//   3) chrome.tabs.sendMessage(tab.id, {type: <REMOTE>, taskId, ...params}) 等 ack
-//   4) ack ok 立即 return，后续 pd:log/pd:done 走 facade onMessage 路径
-
 import type {DispatchContext, DispatchFn, PdFacade} from './types'
 import {
     IG_COLLECT_REELS_REMOTE,
@@ -38,8 +31,6 @@ async function findTab(spec: PlatformSpec): Promise<chrome.tabs.Tab | null> {
     return tabs[0] || null
 }
 
-// 标准 fire-and-forget 派发：找 tab → setTabId → 发消息等 ack
-// ack ok 后立即返回；后续 pd:done 由 CS 推回 facade
 async function dispatchRemoteToTab(
     ctx: DispatchContext,
     spec: PlatformSpec,
@@ -75,7 +66,6 @@ async function dispatchRemoteToTab(
         return
     }
     ctx.pushLog('progress', {message: `cs accepted: ${JSON.stringify(ack)}`})
-    // 不阻塞：pd:done 由 CS 异步推回 facade
 }
 
 function strParam(raw: unknown): string {
@@ -95,7 +85,6 @@ function boolParam(raw: unknown, fallback = false): boolean {
     return fallback
 }
 
-// ---- TikTok ----
 
 const tkProfileMetrics: DispatchFn = async (params, ctx) => {
     const username = strParam(params.username)
@@ -156,7 +145,6 @@ const tkBridgeToIg: DispatchFn = async (params, ctx) => {
     })
 }
 
-// ---- Instagram ----
 
 const igCollectReels: DispatchFn = async (params, ctx) => {
     const username = strParam(params.username)
@@ -181,11 +169,9 @@ const igGenerateScript: DispatchFn = async (_params, ctx) => {
     await dispatchRemoteToTab(ctx, PLATFORM_INSTAGRAM, IG_GENERATE_SCRIPT_REMOTE, {})
 }
 
-// ---- Nox ----
 
 const noxAutoCollect: DispatchFn = async (params, ctx) => {
-    // 字段对齐 nox/main.ts NOX_AUTO_COLLECT_REMOTE handler：targetCount / startPageNum / collectProfile
-    // searchUrl / platform 由 handler 直接 readBaseParamsFromUrl() 读，无需 dispatch 透传
+    // searchUrl / platform 由 CS handler 从 URL 读取，不需要 dispatch 传入
     await dispatchRemoteToTab(ctx, PLATFORM_NOX, NOX_AUTO_COLLECT_REMOTE, {
         targetCount: numParam(params.targetCount),
         startPageNum: numParam(params.startPageNum),

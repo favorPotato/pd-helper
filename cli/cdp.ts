@@ -1,10 +1,6 @@
-// 极简 CDP 客户端：HTTP discover + raw WebSocket + Runtime.evaluate 封装
-// 不引 chrome-remote-interface，避免额外依赖
-
 import {sleep} from './util'
 
 interface CdpTarget {
-    // /json HTTP 端点返回 `id`；Target.getTargets 返回 `targetId`
     id?: string
     targetId?: string
     type?: string
@@ -50,7 +46,6 @@ function listExtensionSws(targets: CdpTarget[]): CdpTarget[] {
 
 const PD_HELPER_NAME = 'pd-helper'
 
-// 通过 evaluate 拿 SW 的 manifest name 判断是不是 pd-helper
 async function probeSwIsPdHelper(wsUrl: string): Promise<boolean> {
     let conn: CdpConnection | null = null
     try {
@@ -71,8 +66,6 @@ async function probeSwIsPdHelper(wsUrl: string): Promise<boolean> {
     }
 }
 
-// 走 /json 端点找 pd-helper 的 SW（active 时存在）
-// 若已知 extIdHint，直接按 URL 匹配；否则用 probeSwIsPdHelper 一个个 evaluate manifest.name 验证
 async function discoverViaJson(base: string, extIdHint?: string): Promise<SwTarget | null> {
     const targets = await httpJson<CdpTarget[]>(`${base}/json`)
     const sws = listExtensionSws(targets)
@@ -96,7 +89,6 @@ async function discoverViaJson(base: string, extIdHint?: string): Promise<SwTarg
     return null
 }
 
-// ---- WebSocket ----
 type Pending = {resolve: (v: unknown) => void; reject: (e: Error) => void}
 
 export interface CdpEvent {
@@ -202,19 +194,15 @@ export async function connectWs(wsUrl: string): Promise<CdpConnection> {
     }
 }
 
-// ---- 高层封装 ----
-
 export interface AttachedSession {
     conn: CdpConnection
     sessionId?: string  // browser endpoint 模式下必填
     via: 'json' | 'browser'
     target: SwTarget
-    // 用于断线重连
     cdpUrl: string
     opts: AttachOpts
 }
 
-// 在原 session 对象上 mutate：建立新 WS 连接、更新 sessionId/target/conn
 export async function reconnectSession(session: AttachedSession): Promise<void> {
     try { session.conn.close() } catch { /* ignore */ }
     const fresh = await attachToServiceWorker(session.cdpUrl, session.opts)
@@ -225,14 +213,12 @@ export async function reconnectSession(session: AttachedSession): Promise<void> 
 }
 
 export interface AttachOpts {
-    /** 若已知 pd-helper 的 extension ID，可直接传入，避免 chrome://extensions/ DOM 枚举 */
     extId?: string
 }
 
 export async function attachToServiceWorker(cdpUrl: string, opts: AttachOpts = {}): Promise<AttachedSession> {
     const base = cdpUrl.replace(/\/+$/, '')
 
-    // 1) /json 快速路径：SW 已 active 时直接命中
     try {
         const target = await discoverViaJson(base, opts.extId)
         if (target) {
@@ -245,7 +231,6 @@ export async function attachToServiceWorker(cdpUrl: string, opts: AttachOpts = {
         if (e instanceof CdpError && e.code === 'CHROME_NOT_FOUND') throw e
     }
 
-    // 2) browser endpoint + ServiceWorker.startWorker 唤醒 dormant SW
     const version = await httpJson<{webSocketDebuggerUrl?: string}>(`${base}/json/version`)
     if (!version.webSocketDebuggerUrl) throw new CdpError('SW_DEAD', '未拿到 browser webSocketDebuggerUrl')
 
@@ -261,11 +246,6 @@ export async function attachToServiceWorker(cdpUrl: string, opts: AttachOpts = {
     }
 }
 
-// Browser endpoint 下唤醒并 attach 扩展 SW
-// 关键策略（来自调研）：
-//   1. 不主动 Target.getTargets 遍历 worker target（chromium bug 会让 SW 卡死）
-//   2. autoAttach + 监听 attachedToTarget 是被动 attach
-//   3. 主动唤醒走 ServiceWorker.startWorker({scopeURL})，比 createTarget 临时 tab 干净
 async function dormantWakeAndAttach(conn: CdpConnection, browserWsUrl: string, extIdHint?: string): Promise<AttachedSession> {
     const captures: Array<{sessionId: string; targetInfo: CdpTarget}> = []
     const off = conn.onEvent((ev) => {
@@ -288,21 +268,14 @@ async function dormantWakeAndAttach(conn: CdpConnection, browserWsUrl: string, e
             filter: [{type: 'service_worker', exclude: false}]
         })
 
-        // 解析 extId：优先 hint，否则用 chrome://extensions/ DOM 抓
         const pdExtId = extIdHint || await detectPdHelperExtId(conn).catch(() => '')
         if (!pdExtId) throw new CdpError('SW_DEAD', '未能枚举到 pd-helper 扩展 ID（可用 --ext-id 提供）')
 
         const matchPd = () => captures.find(c => String(c.targetInfo.url || '').includes(`chrome-extension://${pdExtId}/`))
 
-        // 让已有 SW 通过 autoAttach 上报
         await sleep(300)
 
         if (!matchPd()) {
-            // 关键流程：
-            //   ServiceWorker.startWorker 只在 page session 上可用，browser endpoint 没这个域。
-            //   做法：createTarget 一个扩展页 → attachToTarget 拿 page sessionId
-            //         → 在 page sessionId 上 ServiceWorker.enable + startWorker
-            //         → autoAttach 自动 attach pd-helper SW 并触发 attachedToTarget 事件
             await wakeViaPageSession(conn, pdExtId)
             const deadline = Date.now() + 5000
             while (!matchPd() && Date.now() < deadline) await sleep(100)
@@ -324,14 +297,12 @@ async function dormantWakeAndAttach(conn: CdpConnection, browserWsUrl: string, e
         try { await conn.send('Runtime.enable', {}, sessionId) } catch { /* ignore */ }
         try { await conn.send('Debugger.enable', {}, sessionId) } catch { /* ignore */ }
 
-        // cdpUrl / opts 由外层 attachToServiceWorker 填充
         return {conn, sessionId, via: 'browser', target, cdpUrl: '', opts: {}}
     } finally {
         off()
     }
 }
 
-// 通过 chrome://extensions/ 拿到 pd-helper 的扩展 ID（若找不到返回空串）
 async function detectPdHelperExtId(conn: CdpConnection): Promise<string> {
     const t = await conn.send<{targetInfos: CdpTarget[]}>('Target.getTargets', {})
     let extPage = t.targetInfos.find(x => x.url === 'chrome://extensions/')
@@ -370,8 +341,7 @@ async function detectPdHelperExtId(conn: CdpConnection): Promise<string> {
     }
 }
 
-// 通过创建一个扩展页拿 page session，再发 ServiceWorker.startWorker 唤醒目标 SW
-// 关键：ServiceWorker.* 不存在于 browser endpoint，只能在 page session 上调用
+// ServiceWorker.* 不存在于 browser endpoint，必须在 page session 上调用
 async function wakeViaPageSession(conn: CdpConnection, extId: string): Promise<void> {
     const ct = await conn.send<{targetId: string}>('Target.createTarget', {
         url: `chrome-extension://${extId}/manifest.json`
@@ -380,8 +350,7 @@ async function wakeViaPageSession(conn: CdpConnection, extId: string): Promise<v
     if (!pageTid) return
 
     try {
-        // 让 page 跑一会儿再 attach（避免 page session 还没 ready）
-        await sleep(300)
+        await sleep(300)  // 等 page session ready
         const at = await conn.send<{sessionId: string}>('Target.attachToTarget', {targetId: pageTid, flatten: true})
         const pageSid = at.sessionId
 
@@ -396,7 +365,6 @@ async function wakeViaPageSession(conn: CdpConnection, extId: string): Promise<v
     }
 }
 
-// 在 SW 中 evaluate awaitPromise，返回反序列化后的值
 export async function evaluate<T = unknown>(session: AttachedSession, expression: string, awaitPromise = true): Promise<T> {
     const res = await session.conn.send<{
         result: {value?: unknown; type: string; description?: string}
@@ -415,7 +383,7 @@ export async function evaluate<T = unknown>(session: AttachedSession, expression
     return res.result.value as T
 }
 
-// SW 端用 PdError 抛 `[CODE] message`；优先解析前缀，找不到再退到字符串匹配
+// SW 端用 PdError 抛 `[CODE] message` 格式；优先解析前缀，否则退回字符串匹配
 const PD_CODE_RE = /\[([A-Z_]+)\]/
 const KNOWN_CODES: ReadonlySet<string> = new Set([
     'UNKNOWN_ERROR', 'LOGIN_REQUIRED', 'RATE_LIMITED', 'TAB_CLOSED', 'INVALID_PARAM',
@@ -428,7 +396,6 @@ function classifyEvalError(desc: string): string {
     return 'UNKNOWN_ERROR'
 }
 
-// 调用 globalThis.__pd.<method>(...args)，args 通过 JSON 序列化注入
 export async function callPd<T = unknown>(session: AttachedSession, method: string, args: unknown[] = []): Promise<T> {
     const argsJson = JSON.stringify(args)
     const expr = `(async () => {

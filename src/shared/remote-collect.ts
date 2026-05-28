@@ -10,7 +10,6 @@ export const TK_COLLECT_PROGRESS = 'tk_collect_progress'
 export const TK_PREPARE_PAGE_CONTEXT = 'tk_prepare_page_context'
 export const NOX_LOG = 'nox_log'
 
-// cli-bridge 业务接入用：CS 端 fire-and-forget remote handler
 export const TK_BATCH_COLLECT_REMOTE = 'tk_batch_collect_remote'
 export const TK_DOWNLOAD_VIDEO_REMOTE = 'tk_download_video_remote'
 export const TK_BRIDGE_TO_IG_REMOTE = 'tk_bridge_to_ig_remote'

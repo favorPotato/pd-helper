@@ -1,5 +1,3 @@
-// NDJSON 输出：每行一个 LogFrame
-
 export interface LogFrame {
     v: 1
     type: 'meta' | 'progress' | 'result' | 'error' | 'cancelled' | 'heartbeat'

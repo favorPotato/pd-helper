@@ -499,7 +499,6 @@ function claimUnusedBatch_(payload) {
   var maxR = targetRows[targetRows.length - 1];
   var spanSize = maxR - minR + 1;
 
-  // 一次性读 span，构造 items + 在内存中标记 using/updatedAt
   var span = sheet.getRange(minR, 1, spanSize, lastCol).getValues();
   for (var i = 0; i < targetRows.length; i++) {
     var rn = targetRows[i];
@@ -509,7 +508,7 @@ function claimUnusedBatch_(payload) {
     items.push(buildInfluencerItemFromRow_(rowData, headerMap));
   }
 
-  // 只写两列，整列一次性 setValues（API call 数从 N×2 降到 2）
+  // 整列一次性 setValues，API call 数从 N×2 降到 2
   var statusGrid = new Array(spanSize);
   var updatedGrid = new Array(spanSize);
   for (var s = 0; s < spanSize; s++) {

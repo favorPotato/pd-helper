@@ -50,7 +50,6 @@ export class FixedOverlay {
             this.render();
         }
 
-        // Set the platform attribute on the host element
         this.platform = platform;
         host.setAttribute('data-pd-helper-platform', platform);
         this.setCollapsed(this.collapsed);
@@ -61,7 +60,6 @@ export class FixedOverlay {
         this.statusBox.className = `status ${platform}`;
         this.statusBox.textContent = text;
 
-        // Sync enabled state after status update
         this.syncEnabledAttribute();
     }
 
@@ -69,7 +67,6 @@ export class FixedOverlay {
         const host = document.getElementById(FixedOverlay.HOST_ID);
         if (!host || !this.buttons) return;
 
-        // Determine enabled state: enabled if at least one button is enabled
         const enabled = this.buttons.some(button => button.config.visible !== false && button.config.enabled !== false);
         host.setAttribute('data-pd-helper-enabled', enabled.toString());
     }
@@ -314,7 +311,6 @@ export class FixedOverlay {
             element.style.display = visible ? 'flex' : 'none';
             element.disabled = !enabled;
             this.buttons[existingIndex].config = {text, color, onClick, enabled, visible};
-            // Sync enabled state when button is updated
             this.syncEnabledAttribute();
             return;
         }
@@ -328,7 +324,6 @@ export class FixedOverlay {
 
         this.buttonContainer.appendChild(btn);
         this.buttons.push({element: btn, config: {text, color, onClick, enabled, visible: true}});
-        // Sync enabled state when button is added
         this.syncEnabledAttribute();
     }
 
@@ -377,7 +372,6 @@ export class FixedOverlay {
             target.config.enabled = enabled;
         }
 
-        // Sync enabled state when button is enabled/disabled
         this.syncEnabledAttribute();
     }
 

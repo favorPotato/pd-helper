@@ -1,13 +1,11 @@
 /**
  * 通过 CDP 给指定比特环境打开 N 个独立 BrowserContext
- * 不依赖 playwright，用运行时自带的 WebSocket
- *
- * 默认 daemon 化（后台运行），关闭比特环境后自动退出
+ * 默认 daemon 化，关闭比特环境后自动退出
  *
  * 用法：
  *   bun scripts/cdp-ctx.js --seq 31402            # 默认 N=3，后台
  *   bun scripts/cdp-ctx.js --seq 31402 --n 5      # 5 个 ctx，后台
- *   bun scripts/cdp-ctx.js --seq 31402 --fg       # 前台跑（看日志/调试）
+ *   bun scripts/cdp-ctx.js --seq 31402 --fg       # 前台（调试）
  */
 
 import {spawn} from 'node:child_process'
@@ -49,7 +47,6 @@ if (!Number.isFinite(N) || N <= 0) {
     process.exit(1)
 }
 
-// ---- daemon 化：默认后台，--fg 时跳过 ----
 if (!FG && !process.env.__CDP_CTX_DAEMON__) {
     const logPath = join(homedir(), `Library/Logs/pd-helper-cdp-ctx-${SEQ}.log`)
     const fd = openSync(logPath, 'a')
@@ -76,7 +73,6 @@ async function bitPost(endpoint, body = {}) {
     return await r.json()
 }
 
-// ---- 找 windowId ----
 const list = await bitPost('/browser/list', {page: 0, pageSize: 1, seq: SEQ})
 const windowId = list?.data?.list?.[0]?.id
 if (!windowId) {
@@ -85,7 +81,6 @@ if (!windowId) {
 }
 console.log(`[init] seq=${SEQ} windowId=${windowId}`)
 
-// ---- 确保已打开 ----
 let portsRes = await bitPost('/browser/ports')
 let cdpPort = portsRes?.data?.[windowId]
 if (!cdpPort) {
@@ -106,13 +101,11 @@ if (!cdpPort) {
 }
 console.log(`[init] CDP port=${cdpPort}`)
 
-// ---- 拿 ws url ----
 const verRes = await fetch(`http://127.0.0.1:${cdpPort}/json/version`)
 /** @type {{webSocketDebuggerUrl: string}} */
 const ver = await verRes.json()
 console.log(`[init] ws=${ver.webSocketDebuggerUrl}`)
 
-// ---- 直连 WebSocket ----
 const ws = new WebSocket(ver.webSocketDebuggerUrl)
 let nextId = 1
 const pending = new Map()
@@ -147,12 +140,10 @@ function cdpSend(method, params = {}) {
 await new Promise((r) => ws.addEventListener('open', () => r()))
 console.log('[cdp] ws connected')
 
-// ---- 下载目录：~/Downloads/<seq>/ ，所有 ctx 共用 ----
 const downloadDir = join(homedir(), 'Downloads', String(SEQ))
 mkdirSync(downloadDir, {recursive: true})
 console.log(`[cdp] downloadDir=${downloadDir}`)
 
-// ---- 创建 N 个 BrowserContext，每个建一个 about:blank ----
 const created = []
 for (let i = 1; i <= N; i++) {
     const ctx = await cdpSend('Target.createBrowserContext')
@@ -167,7 +158,6 @@ for (let i = 1; i <= N; i++) {
         browserContextId: ctx.browserContextId
     })
 
-    // 给 page 改个标题方便识别
     const sess = await cdpSend('Target.attachToTarget', {targetId: tgt.targetId, flatten: true})
     ws.send(JSON.stringify({
         sessionId: sess.sessionId,
