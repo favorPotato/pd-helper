@@ -392,7 +392,7 @@ export class Downloader {
     public static async downloadTikTokVideo(): Promise<DownloadedVideo> {
         const pageUrl = window.location.href
         const videoId = getVideoIdFromPageUrl(pageUrl)
-        return await Downloader.downloadFromPage(pageUrl, videoId, `tiktok_${Date.now()}.mp4`)
+        return await Downloader.downloadFromPage(pageUrl, videoId, `${videoId}.mp4`)
     }
 
     public static async downloadTikTokVideoByCandidates(candidates: DownloadCandidate[], referrer: string, filename?: string): Promise<DownloadedVideo> {
