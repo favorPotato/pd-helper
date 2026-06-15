@@ -156,25 +156,31 @@ function initTikTokMessageHandler(): void {
                 const detail = parseVideoDetailFromHtml(html)
                 if (!detail) throw new Error('详情页未就绪（请重试）')
                 const itemStruct = detail.itemStruct
-                // 可选评论采集（best-effort）：塞进 itemStruct 原生 comments 字段
+                // 评论采集与视频下载互不依赖，并行跑；二者皆 best-effort，失败仅记日志不连累 itemStruct 回传
+                const jobs: Promise<void>[] = []
                 if (withComments) {
+                    // 可选评论采集：塞进 itemStruct 原生 comments 字段
+                    jobs.push((async () => {
+                        try {
+                            const authorId = String((itemStruct.author as {id?: unknown})?.id ?? '')
+                            const {comments} = await fetchVideoComments(String(itemStruct.id), authorId, detail.requestEnv, window.location.href)
+                            itemStruct.comments = comments
+                            rt.log(`已采评论 ${comments.length} 条`)
+                        } catch (error) {
+                            rt.log(`评论采集失败（itemStruct 已采）: ${error instanceof Error ? error.message : String(error)}`)
+                        }
+                    })())
+                }
+                jobs.push((async () => {
                     try {
-                        const authorId = String((itemStruct.author as {id?: unknown})?.id ?? '')
-                        const {comments} = await fetchVideoComments(String(itemStruct.id), authorId, detail.requestEnv, window.location.href)
-                        itemStruct.comments = comments
-                        rt.log(`已采评论 ${comments.length} 条`)
+                        const videoData = await saveCurrentVideo(html)
+                        rt.log(`视频已落盘: ${videoData.name} (${videoData.bytes.byteLength} bytes)`)
                     } catch (error) {
-                        rt.log(`评论采集失败（itemStruct 已采）: ${error instanceof Error ? error.message : String(error)}`)
+                        rt.log(`视频落盘失败（itemStruct 已采）: ${error instanceof Error ? error.message : String(error)}`)
                     }
-                }
+                })())
+                await Promise.all(jobs)
                 pruneItemStruct(itemStruct)
-                // best-effort：下载失败不连累 itemStruct 回传
-                try {
-                    const videoData = await saveCurrentVideo(html)
-                    rt.log(`视频已落盘: ${videoData.name} (${videoData.bytes.byteLength} bytes)`)
-                } catch (error) {
-                    rt.log(`视频落盘失败（itemStruct 已采）: ${error instanceof Error ? error.message : String(error)}`)
-                }
                 rt.throwIfCancelled()
                 return itemStruct
             })

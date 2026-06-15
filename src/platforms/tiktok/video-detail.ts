@@ -1,4 +1,4 @@
-import {buildRequestEnvFromAppContext, extractScriptContentById} from './collector'
+import {asObject, buildRequestEnvFromAppContext, extractScriptContentById} from './collector'
 import type {RequestEnv} from './client'
 import {withPdCode} from '../../shared/cli-bridge/cs-runtime'
 
@@ -51,11 +51,6 @@ const ITEM_PRUNE_TOP = ['digged', 'forFriend', 'collected']
 const VIDEO_PRUNE = ['playAddr', 'downloadAddr', 'cover', 'originCover', 'dynamicCover', 'shareCover', 'reflowCover', 'zoomCover', 'bitrateInfo', 'PlayAddrStruct', 'claInfo']
 const MUSIC_PRUNE = ['playUrl', 'coverLarge', 'coverMedium', 'coverThumb', 'tt2dsp']
 const AUTHOR_PRUNE = ['avatarLarger', 'avatarMedium', 'avatarThumb']
-
-function asObject(value: unknown): Record<string, unknown> | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-    return value as Record<string, unknown>
-}
 
 // 占位用户名 @i 即可：服务端按 videoId 返回，真实作者从 itemStruct.author.uniqueId 自带
 export function buildVideoDetailUrl(videoId: string): string {

@@ -52,7 +52,7 @@ async function emitCollectLog(logger: CollectLogFn | undefined, message: string)
     await logger(message)
 }
 
-function asObject(value: unknown): AnyObject | null {
+export function asObject(value: unknown): AnyObject | null {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null
     return value as AnyObject
 }
