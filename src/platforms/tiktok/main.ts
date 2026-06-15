@@ -152,8 +152,9 @@ function initTikTokMessageHandler(): void {
             void runFireAndForget(taskId, async (rt) => {
                 rt.throwIfCancelled()
                 const html = document.documentElement.outerHTML
+                // GONE/AUTH_WALL 由 parseVideoDetailFromHtml 抛带 pdCode 的终态错误；null 仅为 PENDING（页面尚未就绪）
                 const detail = parseVideoDetailFromHtml(html)
-                if (!detail) throw new Error('未找到视频详情数据（视频可能不存在或已被删除）')
+                if (!detail) throw new Error('详情页未就绪（请重试）')
                 const itemStruct = detail.itemStruct
                 // 可选评论采集（best-effort）：塞进 itemStruct 原生 comments 字段
                 if (withComments) {

@@ -240,38 +240,52 @@ function resolveTkVideoId(url: string, videoId: string): string | null {
     return m ? m[1] : null
 }
 
-// 在目标 tab 内探测 TikTok 详情页是否已就绪（脱离「please wait」过渡/风控空壳）。
-// 与 video-detail.ts 的 VIDEO_DETAIL_SCOPE/parseVideoDetailFromHtml 同构，但须 executeScript 注入页面上下文无法 import，改判据时两处需同步
-function tkDetailReadyProbe(): boolean {
+// 详情页四态：READY 正常 / GONE 已删除·不存在·审核中（终态）/ AUTH_WALL 登录墙（终态）/ PENDING 风控·过渡（可重试）
+type TkDetailState = 'READY' | 'GONE' | 'AUTH_WALL' | 'PENDING'
+
+// 在目标 tab 内探测 TikTok 详情页态。判别序 PENDING→GONE→AUTH_WALL→READY。
+// 与 video-detail.ts 的 classifyVideoDetail 同构，但 executeScript 注入页面上下文无法 import，改判据两处必须同步
+function tkDetailReadyProbe(): TkDetailState {
     const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__') || document.getElementById('__UNIVERSAL_DATA_FOR_VAR__')
     const text = el && el.textContent
-    if (!text) return false
+    if (!text) return 'PENDING'
     try {
         const scope = (JSON.parse(text) || {}).__DEFAULT_SCOPE__ || {}
         const detail = scope['webapp.video-detail']
-        if (!detail) return false
-        if (detail.statusCode != null && Number(detail.statusCode) !== 0) return false
-        const id = detail.itemInfo && detail.itemInfo.itemStruct && detail.itemInfo.itemStruct.id
-        return typeof id === 'string' && id.length > 0
+        if (!detail) return 'PENDING'
+        const code = Number(detail.statusCode)
+        if (code === 10204) return 'GONE'
+        if (code !== 0) return 'PENDING'
+        const itemStruct = detail.itemInfo && detail.itemInfo.itemStruct
+        const id = itemStruct && itemStruct.id
+        if (typeof id !== 'string' || !id) return 'PENDING'
+        const video = itemStruct.video || {}
+        const hasPlayAddr = typeof video.playAddr === 'string' && video.playAddr.length > 0
+        const hasBitrate = Array.isArray(video.bitrateInfo) && video.bitrateInfo.length > 0
+        if (!hasPlayAddr && !hasBitrate) return 'AUTH_WALL'
+        return 'READY'
     } catch {
-        return false
+        return 'PENDING'
     }
 }
 
-// 不硬等：轮询穿过「please wait」过渡页；整轮仍空壳就 reload 重试（风控空壳多为一次性），都不行才放弃
-async function waitForTkDetailReady(tabId: number): Promise<boolean> {
-    const probe = async (): Promise<boolean> => {
+// 不硬等：仅 PENDING（风控/please-wait 过渡，多为一次性）才轮询 + reload 重试；GONE/AUTH_WALL 立即返回终态零重试
+async function waitForTkDetailReady(tabId: number): Promise<TkDetailState> {
+    const probe = async (): Promise<TkDetailState> => {
         try {
             const r = await chrome.scripting.executeScript({target: {tabId}, func: tkDetailReadyProbe})
-            return r?.[0]?.result === true
+            const state = r?.[0]?.result
+            return state === 'READY' || state === 'GONE' || state === 'AUTH_WALL' ? state : 'PENDING'
         } catch {
-            return false // 导航中/不可达，下一轮再探
+            return 'PENDING' // 导航中/不可达，下一轮再探
         }
     }
+    let last: TkDetailState = 'PENDING'
     for (let round = 0; round < 3; round += 1) {
         const deadline = Date.now() + 4000
         while (Date.now() < deadline) {
-            if (await probe()) return true
+            last = await probe()
+            if (last !== 'PENDING') return last
             await delay(400)
         }
         if (round < 2) {
@@ -279,11 +293,11 @@ async function waitForTkDetailReady(tabId: number): Promise<boolean> {
                 await chrome.tabs.reload(tabId)
                 await waitForTabComplete(tabId, 15000)
             } catch {
-                return false
+                return 'PENDING'
             }
         }
     }
-    return false
+    return last
 }
 
 // 后台开临时 tab 导航到 detailUrl 并定向派发；失败即关 tab，成功后登记由任务终态回收
@@ -292,7 +306,7 @@ async function navigateAndDispatch(
     detailUrl: string,
     remoteType: string,
     payload: Record<string, unknown>,
-    waitReady?: (tabId: number) => Promise<boolean>
+    waitReady?: (tabId: number) => Promise<TkDetailState>
 ): Promise<void> {
     if (typeof chrome === 'undefined' || !chrome.tabs?.create) {
         ctx.setTabId(null)
@@ -319,11 +333,20 @@ async function navigateAndDispatch(
         return
     }
 
-    // 等页面真就绪（穿过 please-wait/空壳）再派发，否则 CS 读到空壳直接失败
-    if (waitReady && !await waitReady(tabId)) {
-        void chrome.tabs.remove(tabId).catch(() => undefined)
-        ctx.fail('UNKNOWN_ERROR', '详情页未就绪（please-wait/风控空壳，重试后仍未拿到数据）')
-        return
+    // 等页面真就绪（穿过 please-wait/空壳）再派发；按四态分流，仅 READY 继续
+    if (waitReady) {
+        const state = await waitReady(tabId)
+        if (state !== 'READY') {
+            void chrome.tabs.remove(tabId).catch(() => undefined)
+            if (state === 'GONE') {
+                ctx.fail('VIDEO_DELETED', '视频已删除或不存在（statusCode=10204）')
+            } else if (state === 'AUTH_WALL') {
+                ctx.fail('LOGIN_REQUIRED', '该视频需登录态才能查看，公共接口不可取')
+            } else {
+                ctx.fail('UNKNOWN_ERROR', '详情页未就绪（please-wait/风控空壳，重试后仍未拿到数据）')
+            }
+            return
+        }
     }
 
     // CS 由 manifest 在 tiktok.com 自动注入；tab 已 complete，少量重试即可覆盖注入竞态
