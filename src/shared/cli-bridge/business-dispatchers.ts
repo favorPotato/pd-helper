@@ -1,5 +1,7 @@
 import type {DispatchContext, DispatchFn, PdFacade} from './types'
 import {PLATFORM_INSTAGRAM, PLATFORM_NOX, PLATFORM_TIKTOK, type PlatformSpec} from './platforms'
+import {registerEphemeralTab} from './ephemeral-tabs'
+import {delay} from '../timing'
 import {
     IG_COLLECT_REELS_REMOTE,
     IG_GENERATE_SCRIPT_REMOTE,
@@ -16,6 +18,7 @@ import {
     TK_BATCH_COLLECT_REMOTE,
     TK_BRIDGE_TO_IG_REMOTE,
     TK_COLLECT_REMOTE,
+    TK_FETCH_VIDEO_REMOTE,
     TK_DOWNLOAD_VIDEO_REMOTE,
     TK_PROFILE_METRICS_REMOTE
 } from '../remote-collect'
@@ -204,6 +207,17 @@ const tkCollect: DispatchFn = async (params, ctx) => {
     })
 }
 
+const tkFetchVideo: DispatchFn = async (params, ctx) => {
+    const id = resolveTkVideoId(strParam(params.url), strParam(params.videoId))
+    if (!id) {
+        ctx.setTabId(null)
+        ctx.fail('INVALID_PARAM', 'url or videoId required')
+        return
+    }
+    // 导航式单采：CS 从活 DOM 同时出 itemStruct(JSON) 与视频文件
+    await navigateAndDispatch(ctx, `https://www.tiktok.com/@i/video/${id}`, TK_FETCH_VIDEO_REMOTE, {})
+}
+
 const tkBatchCollect: DispatchFn = async (params, ctx) => {
     await dispatchRemoteToRuntime(ctx, TK_BATCH_COLLECT_REMOTE, {
         batchSize: numParam(params.batchSize),
@@ -216,6 +230,73 @@ const tkBatchCollect: DispatchFn = async (params, ctx) => {
     })
 }
 
+// SW 侧无 window，不能复用 getVideoIdFromPageUrl：纯 videoId 直认，否则从链接抽 /video/{id}
+function resolveTkVideoId(url: string, videoId: string): string | null {
+    const direct = videoId.trim()
+    if (/^\d+$/.test(direct)) return direct
+    const m = url.trim().match(/\/video\/(\d+)/)
+    return m ? m[1] : null
+}
+
+// 后台开临时 tab 导航到 detailUrl 并定向派发；失败即关 tab，成功后登记由任务终态回收
+async function navigateAndDispatch(
+    ctx: DispatchContext,
+    detailUrl: string,
+    remoteType: string,
+    payload: Record<string, unknown>
+): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome.tabs?.create) {
+        ctx.setTabId(null)
+        ctx.fail('UNKNOWN_ERROR', 'chrome.tabs API not available')
+        return
+    }
+
+    ctx.markPhase('navigating_tab')
+    let tabId: number
+    try {
+        const tab = await chrome.tabs.create({url: detailUrl, active: false})
+        if (!tab.id) throw new Error('tab missing id')
+        tabId = tab.id
+    } catch (e) {
+        ctx.setTabId(null)
+        ctx.fail('TAB_CLOSED', `open tab failed: ${e instanceof Error ? e.message : String(e)}`)
+        return
+    }
+    ctx.setTabId(tabId)
+
+    if (!await waitForTabComplete(tabId, 20000)) {
+        void chrome.tabs.remove(tabId).catch(() => undefined)
+        ctx.fail('TAB_CLOSED', 'timeout_waiting_for_tab_complete')
+        return
+    }
+
+    // CS 由 manifest 在 tiktok.com 自动注入；tab 已 complete，少量重试即可覆盖注入竞态
+    ctx.markPhase('messaging_cs')
+    let ack: unknown
+    let lastErr = ''
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+        try {
+            ack = await chrome.tabs.sendMessage(tabId, {...payload, type: remoteType, taskId: ctx.taskId})
+            break
+        } catch (e) {
+            lastErr = e instanceof Error ? e.message : String(e)
+            if (attempt < 7) await delay(250)
+        }
+    }
+
+    const okAck = ack && typeof ack === 'object' && ((ack as {accepted?: unknown}).accepted === true || (ack as {ok?: unknown}).ok === true)
+    if (!okAck) {
+        void chrome.tabs.remove(tabId).catch(() => undefined)
+        ctx.fail('UNKNOWN_ERROR', `cs did not accept: ${lastErr || JSON.stringify(ack ?? null)}`)
+        return
+    }
+
+    // ack 成功才登记，确保失败路径不会留下需关闭的幽灵 tab
+    registerEphemeralTab(ctx.taskId, tabId)
+    ctx.pushLog('progress', {message: `cs accepted on nav tab ${tabId}: ${JSON.stringify(ack)}`})
+}
+
+// 下载当前已打开 TK tab 的视频（不导航）；带 videoId 的导航式单采走 tkFetchVideo
 const tkDownloadVideo: DispatchFn = async (_params, ctx) => {
     await dispatchRemoteToTab(ctx, PLATFORM_TIKTOK, TK_DOWNLOAD_VIDEO_REMOTE, {})
 }
@@ -293,6 +374,7 @@ const noxResumeAutoCollect: DispatchFn = async (_params, ctx) => {
 const DISPATCHERS: Readonly<Record<string, DispatchFn>> = {
     tkProfileMetrics,
     tkCollect,
+    tkFetchVideo,
     tkBatchCollect,
     tkDownloadVideo,
     tkBridgeToIg,

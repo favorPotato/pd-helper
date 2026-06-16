@@ -1,5 +1,5 @@
 import {VideoHelper} from './helpers'
-import {fetchBinary, fetchHead, fetchHtml} from './client'
+import {fetchBinary, fetchHead} from './client'
 import type {DownloadedVideo} from './types'
 
 const QUALITY_SCORE: Record<string, number> = {'1080p': 4, '720p': 3, '540p': 2, '360p': 1}
@@ -122,7 +122,7 @@ function asObject(v: unknown): AnyObject | null {
     return v as AnyObject
 }
 
-function getVideoIdFromPageUrl(pageUrl: string): string {
+export function getVideoIdFromPageUrl(pageUrl: string): string {
     const pathname = new URL(pageUrl, window.location.origin).pathname
     const m = pathname.match(/\/video\/(\d+)/)
     if (!m) throw new Error('parse_error:missing_video_detail')
@@ -323,19 +323,8 @@ export class Downloader {
         throw new Error('parse_error:all_video_urls_failed')
     }
 
-    private static async downloadFromPage(pageUrl: string, videoId: string, filename: string): Promise<DownloadedVideo> {
-
-        let html = ''
-        try {
-            html = await fetchHtml(pageUrl)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            const statusMatch = message.match(/请求失败: (\d+)/)
-            if (statusMatch) {
-                throw new Error(`parse_error:http_status status=${statusMatch[1]}`)
-            }
-            throw error
-        }
+    // 纯抽取+下载内核：HTML 由调用方提供，此处不发起页面请求
+    private static async downloadFromHtml(html: string, videoId: string, filename: string, referrer: string): Promise<DownloadedVideo> {
         const attempts: Array<{ container: string; getText: () => string | null }> = [
             {
                 container: 'DEFAULT_SCOPE',
@@ -386,13 +375,14 @@ export class Downloader {
             throw new Error('parse_error:no_known_container')
         }
 
-        return await Downloader.downloadFromCandidates(candidates, filename, pageUrl)
+        return await Downloader.downloadFromCandidates(candidates, filename, referrer)
     }
 
-    public static async downloadTikTokVideo(): Promise<DownloadedVideo> {
+    // 从活 DOM 抽取下载（浮窗、导航后 tab 均可用）；调用方已读取的 HTML 可传入复用，免重复整页序列化
+    public static async downloadTikTokVideo(html?: string): Promise<DownloadedVideo> {
         const pageUrl = window.location.href
         const videoId = getVideoIdFromPageUrl(pageUrl)
-        return await Downloader.downloadFromPage(pageUrl, videoId, `${videoId}.mp4`)
+        return await Downloader.downloadFromHtml(html ?? document.documentElement.outerHTML, videoId, `${videoId}.mp4`, pageUrl)
     }
 
     public static async downloadTikTokVideoByCandidates(candidates: DownloadCandidate[], referrer: string, filename?: string): Promise<DownloadedVideo> {

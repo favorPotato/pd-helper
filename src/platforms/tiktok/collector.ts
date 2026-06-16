@@ -57,7 +57,7 @@ function asObject(value: unknown): AnyObject | null {
     return value as AnyObject
 }
 
-function extractScriptContentById(html: string, id: string): string | null {
+export function extractScriptContentById(html: string, id: string): string | null {
     const needles = [`id="${id}"`, `id='${id}'`]
     let idx = -1
     for (const needle of needles) {

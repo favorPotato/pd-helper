@@ -81,6 +81,12 @@ No login required. Except for `tkBatchCollect`, all dispatch to an already-open 
 - Params: none
 - Behavior: downloads the video currently open in the tab (URL must contain `/video/<id>`, otherwise `parse_error:missing_video_detail`).
 
+### tkFetchVideo
+- Host: self-opened background tab
+- Params: `url?` / `videoId?` (at least one; both empty → INVALID_PARAM). `url` only needs to contain `/video/<id>`.
+- Behavior: outputs the video's full `itemStruct` JSON, and downloads the video file (best-effort, failure does not affect the JSON). One at a time.
+- Error codes: `INVALID_PARAM`, `TAB_CLOSED`, `UNKNOWN_ERROR` (video missing / deleted).
+
 ### tkBridgeToIg (DEPRECATED)
 - Host: site tab
 - Params: `caption?`

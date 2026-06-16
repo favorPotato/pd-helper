@@ -1,9 +1,11 @@
 import {Downloader} from './downloader'
 import {Collector, type CollectFilterOptions, type SortType} from './collector'
 import {ensureTikTokPageContextReady} from './client'
+import {parseItemStructFromHtml} from './video-detail'
 import {Relay} from './relay'
 import {UiHelper, UrlHelper} from './helpers'
 import {showDialog} from '../../shared/custom-dialog'
+import {downloadBlob} from '../../shared/archive'
 import {TK_BATCH_COLLECT_FIELDS, TK_SINGLE_COLLECT_FIELDS} from '../../shared/tk-collect-fields'
 import {truncateError} from '../../shared/errors'
 
@@ -24,6 +26,7 @@ import {
     TK_DOWNLOAD_VIDEO_REMOTE,
     TK_PROFILE_METRICS_REMOTE,
     TK_COLLECT_REMOTE,
+    TK_FETCH_VIDEO_REMOTE,
     TK_PREPARE_PAGE_CONTEXT
 } from '../../shared/remote-collect'
 import {runFireAndForget} from '../../shared/cli-bridge/cs-runtime'
@@ -41,6 +44,13 @@ async function loadCollectedVideoIdSet(): Promise<Set<string>> {
         console.warn('[TikTok] loadCollectedVideoIdSet failed, fallback to empty set', error)
         return new Set<string>()
     }
+}
+
+// 下载并落盘，返回下载结果；可传入已读取的 HTML 复用，免对同一大页面重复整页序列化
+async function saveCurrentVideo(html?: string) {
+    const videoData = await Downloader.downloadTikTokVideo(html)
+    await downloadBlob(videoData.name, new Blob([videoData.bytes], {type: videoData.mime}))
+    return videoData
 }
 
 let downloadInProgress = false
@@ -130,6 +140,32 @@ function initTikTokMessageHandler(): void {
             return true
         }
 
+        if (msg.type === TK_FETCH_VIDEO_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                const html = document.documentElement.outerHTML
+                const itemStruct = parseItemStructFromHtml(html)
+                if (!itemStruct) throw new Error('未找到视频详情数据（视频可能不存在或已被删除）')
+                // best-effort：下载失败不连累 itemStruct 回传
+                try {
+                    const videoData = await saveCurrentVideo(html)
+                    rt.log(`视频已落盘: ${videoData.name} (${videoData.bytes.byteLength} bytes)`)
+                } catch (error) {
+                    rt.log(`视频落盘失败（itemStruct 已采）: ${error instanceof Error ? error.message : String(error)}`)
+                }
+                rt.throwIfCancelled()
+                return itemStruct
+            })
+            return true
+        }
+
         if (msg.type === TK_PROFILE_METRICS_REMOTE) {
             const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
             const clientTabId = typeof msg.clientTabId === 'number' ? msg.clientTabId : 0
@@ -204,14 +240,7 @@ function initTikTokMessageHandler(): void {
             void runFireAndForget(taskId, async (rt) => {
                 rt.throwIfCancelled()
                 rt.log('开始下载当前视频...')
-                const videoData = await Downloader.downloadTikTokVideo()
-                const blob = new Blob([videoData.bytes], {type: videoData.mime})
-                const url = URL.createObjectURL(blob)
-                const a = document.createElement('a')
-                a.href = url
-                a.download = videoData.name
-                a.click()
-                URL.revokeObjectURL(url)
+                const videoData = await saveCurrentVideo()
                 rt.log(`视频下载完成: ${videoData.name}`)
                 return {filename: videoData.name, size: videoData.bytes.byteLength, mime: videoData.mime}
             })
@@ -262,14 +291,7 @@ async function downloadVideo(): Promise<void> {
         UiHelper.log('开始下载视频...')
         downloadInProgress = true
 
-        const videoData = await Downloader.downloadTikTokVideo()
-        const blob = new Blob([videoData.bytes], {type: videoData.mime})
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = videoData.name
-        a.click()
-        URL.revokeObjectURL(url)
+        await saveCurrentVideo()
         UiHelper.log('视频下载完成')
     } catch (e) {
         const msg = truncateError(e instanceof Error ? e.message : String(e), 500)

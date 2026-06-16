@@ -3,6 +3,7 @@ import {delay} from '../timing'
 import {RingBuffer} from './ring-buffer'
 import {clearMeta, loadAllMeta, persistMeta} from './persistence'
 import {registerBusinessDispatchers} from './business-dispatchers'
+import {takeEphemeralTab} from './ephemeral-tabs'
 import {ALL_PLATFORM_URLS} from './platforms'
 import type {
     DispatchContext,
@@ -76,7 +77,8 @@ function pushLog(taskId: string, type: FrameType, data: Record<string, unknown>)
     const t = tasks.get(taskId)
     if (!t) return
 
-    let payload = truncateData(data)
+    // result 帧承载完整业务结果，豁免截断（否则大 itemStruct 会被砍坏）
+    let payload = type === 'result' ? data : truncateData(data)
     let frame: LogFrame = {
         v: 1,
         type,
@@ -86,7 +88,7 @@ function pushLog(taskId: string, type: FrameType, data: Record<string, unknown>)
         data: payload
     }
 
-    if (byteLen(JSON.stringify(frame)) > FRAME_MAX_BYTES * 4) {
+    if (type !== 'result' && byteLen(JSON.stringify(frame)) > FRAME_MAX_BYTES * 4) {
         payload = {__truncated: true, originalKeys: Object.keys(data)}
         frame = {...frame, data: payload}
     }
@@ -95,10 +97,19 @@ function pushLog(taskId: string, type: FrameType, data: Record<string, unknown>)
     t.meta.lastActivityAt = Date.now()
 }
 
+// 临时 tab 挂任务终态统一回收（cancel/error/done 三路都过 finalizeTask）；延迟关闭给 a.download 提交 blob 的时间
+const EPHEMERAL_TAB_CLOSE_DELAY_MS = 2000
+function closeEphemeralTabFor(taskId: string): void {
+    const tabId = takeEphemeralTab(taskId)
+    if (tabId == null || typeof chrome === 'undefined' || !chrome.tabs?.remove) return
+    setTimeout(() => void chrome.tabs.remove(tabId).catch(() => undefined), EPHEMERAL_TAB_CLOSE_DELAY_MS)
+}
+
 function finalizeTask(taskId: string, status: TerminalStatus, frameType: FrameType, frameData: Record<string, unknown>): void {
     const t = tasks.get(taskId)
     if (!t) return
     if (TERMINAL.has(t.meta.status)) return  // 幂等
+    closeEphemeralTabFor(taskId)
 
     t.meta.status = status
     if (status === 'done') {
