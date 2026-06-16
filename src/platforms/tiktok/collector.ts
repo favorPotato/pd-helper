@@ -154,14 +154,18 @@ function buildRequestEnv(jsonData: unknown, usernameFromUrl: string, secUid: str
         friendCount: toNumber(statsV2.friendCount)
     }
 
-    const requestEnv: RequestEnv = {
-        appLanguage: String(appContext.language || ''),
-        browserLanguage: String(navigator.language || ''),
-        deviceId: String(appContext.wid || '7605966330110543378'),
-        region: String(appContext.region || '')
-    }
+    return {user: output, requestEnv: buildRequestEnvFromAppContext(appContext)}
+}
 
-    return {user: output, requestEnv}
+// 从 app-context 构建 requestEnv（评论/列表 API 通用，任意 TikTok 页都有此 scope）
+export function buildRequestEnvFromAppContext(appContext: AnyObject | null): RequestEnv {
+    const ctx = appContext || {}
+    return {
+        appLanguage: String(ctx.language || ''),
+        browserLanguage: String(navigator.language || ''),
+        deviceId: String(ctx.wid || '7605966330110543378'),
+        region: String(ctx.region || '')
+    }
 }
 
 function extractHashtags(item: AnyObject): string[] {
@@ -282,8 +286,14 @@ function parseSortTags(value: unknown): { top_list: number } {
     }
 }
 
+// 评论中 [贴纸] 为贴纸占位符：清成空格交由空白折叠处理，纯贴纸清洗后为空串，由 shouldKeepComment 的判空整条剔除
+const STICKER_PLACEHOLDER = /\[贴纸\]/g
+
 function normalizeCommentText(value: unknown): string {
-    return String(value || '').replace(/\s+/g, ' ').trim()
+    return String(value || '')
+        .replace(STICKER_PLACEHOLDER, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
 }
 
 function isPureEmojiComment(text: string): boolean {
@@ -453,14 +463,24 @@ async function loadProfileContext(username: string): Promise<{
     }
 }
 
+// 单视频评论采集（清洗/首页与批量采集同款），供详情页单采复用
+export async function fetchVideoComments(
+    videoId: string,
+    authorUserId: string,
+    requestEnv: RequestEnv,
+    referrer: string
+): Promise<{ comments: TikTokComment[]; summary: TikTokCommentSummary }> {
+    const page = await fetchCommentPage(videoId, 0, requestEnv, referrer)
+    return mapCommentResponse(page, authorUserId)
+}
+
 async function fetchCommentsForVideo(
     videoId: string,
     username: string,
     authorUserId: string,
     requestEnv: RequestEnv
 ): Promise<{ comments: TikTokComment[]; summary: TikTokCommentSummary }> {
-    const page = await fetchCommentPage(videoId, 0, requestEnv, buildVideoUrl(username, videoId))
-    return mapCommentResponse(page, authorUserId)
+    return fetchVideoComments(videoId, authorUserId, requestEnv, buildVideoUrl(username, videoId))
 }
 
 function toProfileMetricItems(items: unknown[]): VideoItem[] {

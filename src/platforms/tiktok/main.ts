@@ -1,7 +1,7 @@
 import {Downloader} from './downloader'
-import {Collector, type CollectFilterOptions, type SortType} from './collector'
+import {Collector, fetchVideoComments, type CollectFilterOptions, type SortType} from './collector'
 import {ensureTikTokPageContextReady} from './client'
-import {parseItemStructFromHtml} from './video-detail'
+import {parseVideoDetailFromHtml, pruneItemStruct} from './video-detail'
 import {Relay} from './relay'
 import {UiHelper, UrlHelper} from './helpers'
 import {showDialog} from '../../shared/custom-dialog'
@@ -142,6 +142,7 @@ function initTikTokMessageHandler(): void {
 
         if (msg.type === TK_FETCH_VIDEO_REMOTE) {
             const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            const withComments = msg.comments === true
             if (!taskId) {
                 sendResponse({ok: false, error: 'taskId required'})
                 return true
@@ -151,8 +152,21 @@ function initTikTokMessageHandler(): void {
             void runFireAndForget(taskId, async (rt) => {
                 rt.throwIfCancelled()
                 const html = document.documentElement.outerHTML
-                const itemStruct = parseItemStructFromHtml(html)
-                if (!itemStruct) throw new Error('未找到视频详情数据（视频可能不存在或已被删除）')
+                const detail = parseVideoDetailFromHtml(html)
+                if (!detail) throw new Error('未找到视频详情数据（视频可能不存在或已被删除）')
+                const itemStruct = detail.itemStruct
+                // 可选评论采集（best-effort）：塞进 itemStruct 原生 comments 字段
+                if (withComments) {
+                    try {
+                        const authorId = String((itemStruct.author as {id?: unknown})?.id ?? '')
+                        const {comments} = await fetchVideoComments(String(itemStruct.id), authorId, detail.requestEnv, window.location.href)
+                        itemStruct.comments = comments
+                        rt.log(`已采评论 ${comments.length} 条`)
+                    } catch (error) {
+                        rt.log(`评论采集失败（itemStruct 已采）: ${error instanceof Error ? error.message : String(error)}`)
+                    }
+                }
+                pruneItemStruct(itemStruct)
                 // best-effort：下载失败不连累 itemStruct 回传
                 try {
                     const videoData = await saveCurrentVideo(html)

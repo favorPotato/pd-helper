@@ -214,8 +214,10 @@ const tkFetchVideo: DispatchFn = async (params, ctx) => {
         ctx.fail('INVALID_PARAM', 'url or videoId required')
         return
     }
-    // 导航式单采：CS 从活 DOM 同时出 itemStruct(JSON) 与视频文件
-    await navigateAndDispatch(ctx, `https://www.tiktok.com/@i/video/${id}`, TK_FETCH_VIDEO_REMOTE, {})
+    // 导航式单采：CS 从活 DOM 出 itemStruct(JSON) + 视频文件；CLI 默认连评论一并采进 JSON，comments=false 可关
+    await navigateAndDispatch(ctx, `https://www.tiktok.com/@i/video/${id}`, TK_FETCH_VIDEO_REMOTE, {
+        comments: boolParam(params.comments, true)
+    }, waitForTkDetailReady)
 }
 
 const tkBatchCollect: DispatchFn = async (params, ctx) => {
@@ -238,12 +240,59 @@ function resolveTkVideoId(url: string, videoId: string): string | null {
     return m ? m[1] : null
 }
 
+// 在目标 tab 内探测 TikTok 详情页是否已就绪（脱离「please wait」过渡/风控空壳）。
+// 与 video-detail.ts 的 VIDEO_DETAIL_SCOPE/parseVideoDetailFromHtml 同构，但须 executeScript 注入页面上下文无法 import，改判据时两处需同步
+function tkDetailReadyProbe(): boolean {
+    const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__') || document.getElementById('__UNIVERSAL_DATA_FOR_VAR__')
+    const text = el && el.textContent
+    if (!text) return false
+    try {
+        const scope = (JSON.parse(text) || {}).__DEFAULT_SCOPE__ || {}
+        const detail = scope['webapp.video-detail']
+        if (!detail) return false
+        if (detail.statusCode != null && Number(detail.statusCode) !== 0) return false
+        const id = detail.itemInfo && detail.itemInfo.itemStruct && detail.itemInfo.itemStruct.id
+        return typeof id === 'string' && id.length > 0
+    } catch {
+        return false
+    }
+}
+
+// 不硬等：轮询穿过「please wait」过渡页；整轮仍空壳就 reload 重试（风控空壳多为一次性），都不行才放弃
+async function waitForTkDetailReady(tabId: number): Promise<boolean> {
+    const probe = async (): Promise<boolean> => {
+        try {
+            const r = await chrome.scripting.executeScript({target: {tabId}, func: tkDetailReadyProbe})
+            return r?.[0]?.result === true
+        } catch {
+            return false // 导航中/不可达，下一轮再探
+        }
+    }
+    for (let round = 0; round < 3; round += 1) {
+        const deadline = Date.now() + 4000
+        while (Date.now() < deadline) {
+            if (await probe()) return true
+            await delay(400)
+        }
+        if (round < 2) {
+            try {
+                await chrome.tabs.reload(tabId)
+                await waitForTabComplete(tabId, 15000)
+            } catch {
+                return false
+            }
+        }
+    }
+    return false
+}
+
 // 后台开临时 tab 导航到 detailUrl 并定向派发；失败即关 tab，成功后登记由任务终态回收
 async function navigateAndDispatch(
     ctx: DispatchContext,
     detailUrl: string,
     remoteType: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    waitReady?: (tabId: number) => Promise<boolean>
 ): Promise<void> {
     if (typeof chrome === 'undefined' || !chrome.tabs?.create) {
         ctx.setTabId(null)
@@ -267,6 +316,13 @@ async function navigateAndDispatch(
     if (!await waitForTabComplete(tabId, 20000)) {
         void chrome.tabs.remove(tabId).catch(() => undefined)
         ctx.fail('TAB_CLOSED', 'timeout_waiting_for_tab_complete')
+        return
+    }
+
+    // 等页面真就绪（穿过 please-wait/空壳）再派发，否则 CS 读到空壳直接失败
+    if (waitReady && !await waitReady(tabId)) {
+        void chrome.tabs.remove(tabId).catch(() => undefined)
+        ctx.fail('UNKNOWN_ERROR', '详情页未就绪（please-wait/风控空壳，重试后仍未拿到数据）')
         return
     }
 
