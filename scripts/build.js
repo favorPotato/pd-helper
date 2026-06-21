@@ -46,6 +46,7 @@ await Promise.all([
     build({...common, entryPoints: ['src/shared/content.ts'], outfile: 'dist/content.js'}),
     build({...common, entryPoints: ['src/shared/background.ts'], outfile: 'dist/background.js'}),
     build({...common, entryPoints: ['src/platforms/tiktok/page-bridge.ts'], outfile: 'dist/page-bridge.js'}),
+    build({...common, entryPoints: ['src/platforms/exolyt/page-bridge.ts'], outfile: 'dist/exolyt-page-bridge.js'}),
     build({...common, entryPoints: ['src/runtime/runtime.ts'], outfile: 'dist/runtime.js'})
 ])
 

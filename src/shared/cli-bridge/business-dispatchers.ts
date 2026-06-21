@@ -1,5 +1,5 @@
 import type {DispatchContext, DispatchFn, PdFacade} from './types'
-import {PLATFORM_INSTAGRAM, PLATFORM_NOX, PLATFORM_TIKTOK, type PlatformSpec} from './platforms'
+import {PLATFORM_EXOLYT, PLATFORM_INSTAGRAM, PLATFORM_NOX, PLATFORM_TIKTOK, type PlatformSpec} from './platforms'
 import {registerEphemeralTab} from './ephemeral-tabs'
 import {delay} from '../timing'
 import {
@@ -12,6 +12,7 @@ import {
     NOX_COLLECT_TIKTOK_POOL_REMOTE,
     NOX_PAUSE_AUTO_COLLECT_REMOTE,
     NOX_RESUME_AUTO_COLLECT_REMOTE,
+    EXOLYT_SEARCH_COLLECT_REMOTE,
     PD_RUNTIME_DISPATCH,
     PD_RUNTIME_PING,
     type PdRuntimeDispatchResponse,
@@ -450,6 +451,45 @@ const noxResumeAutoCollect: DispatchFn = async (_params, ctx) => {
     await dispatchRemoteToTab(ctx, PLATFORM_NOX, NOX_RESUME_AUTO_COLLECT_REMOTE, {})
 }
 
+// 链路A：须已打开 exolyt 站点 tab 取同源 JWT，故用 dispatchRemoteToTab；严禁 dispatchRemoteToRuntime（runtime.html 无站点 session）
+// 1.3：透传完整筛选条件到 CS（rawUrl 粘前端 URL 或 9 字段 KV）；映射/默认/白名单校验落 CS 就近（search-params），非法 → [INVALID_PARAM]
+// 本 dispatcher 不做白名单校验（校验对象是 CS 组装后的 body）；仅对显然非法的入站做前置快拦——URL 与 KV 须至少给一路
+const exolytSearchCollect: DispatchFn = async (params, ctx) => {
+    const rawUrl = strParam(params.url) || strParam(params.rawUrl)
+
+    // 9 字段 KV 入口（CLI/条件表单）：原样收集非空字段透传 CS，由 search-params 收敛类型 + 校验（dispatcher 不预校验枚举）
+    // regions/hashtags 接收逗号分隔串或数组；likesMin/accountType 原样透传串交 CS coerce+validate（dispatcher 不吞非法值）
+    const input: Record<string, unknown> = {}
+    const passStr = (k: string): void => { const v = strParam(params[k]); if (v) input[k] = v }
+    const passArr = (k: string): void => {
+        const raw = params[k]
+        if (Array.isArray(raw)) input[k] = raw
+        else { const v = strParam(raw); if (v) input[k] = v.split(',').map(s => s.trim()).filter(Boolean) }
+    }
+    passStr('sort')
+    passStr('mood')
+    passStr('dateStart')
+    passStr('dateEnd')
+    passStr('followers')
+    passArr('regions')
+    passArr('hashtags')
+    // likesMin/accountType 原样透传串（不在此 numParam 收敛）：非法非数字串若在 dispatcher 吞成 undefined 会致 CS 回落默认 = 静默回落
+    // 故交 CS buildSearchBody coerce + validate 统一拦截（与 URL 路径一致），守「禁静默回落默认」
+    passStr('likesMin')
+    passStr('accountType')
+
+    if (!rawUrl && Object.keys(input).length === 0) {
+        ctx.setTabId(null)
+        ctx.fail('INVALID_PARAM', 'exolyt 检索需提供 url（前端筛选 URL）或至少一个筛选字段')
+        return
+    }
+
+    await dispatchRemoteToTab(ctx, PLATFORM_EXOLYT, EXOLYT_SEARCH_COLLECT_REMOTE, {
+        rawUrl,
+        input
+    })
+}
+
 const DISPATCHERS: Readonly<Record<string, DispatchFn>> = {
     tkProfileMetrics,
     tkCollect,
@@ -465,7 +505,8 @@ const DISPATCHERS: Readonly<Record<string, DispatchFn>> = {
     noxBackfillProfiles,
     noxCollectTikTokPool,
     noxPauseAutoCollect,
-    noxResumeAutoCollect
+    noxResumeAutoCollect,
+    exolytSearchCollect
 }
 
 export function registerBusinessDispatchers(facade: PdFacade): void {

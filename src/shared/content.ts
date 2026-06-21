@@ -16,6 +16,7 @@ declare const window: Window & {
     __IG_SETUP_LOADED__?: boolean
     __TT_SETUP_LOADED__?: boolean
     __NOX_SETUP_LOADED__?: boolean
+    __EXOLYT_SETUP_LOADED__?: boolean
     __IG_HELPER_PING_HANDLER_LOADED__?: boolean
 }
 
@@ -79,6 +80,14 @@ async function start(): Promise<void> {
         window.__NOX_SETUP_LOADED__ = true
         const {setup: setupNox} = await import('../platforms/nox/main')
         setupNox()
+        return
+    }
+
+    if (hostname === 'exolyt.com' || hostname.endsWith('.exolyt.com')) {
+        if (window.__EXOLYT_SETUP_LOADED__) return
+        window.__EXOLYT_SETUP_LOADED__ = true
+        const {setup: setupExolyt} = await import('../platforms/exolyt/main')
+        setupExolyt()
         return
     }
 }

@@ -23,13 +23,15 @@ export default {
         '*://*.tiktokcdn-us.com/*',
         '*://*.tiktokv.com/*',
         '*://*.noxinfluencer.com/*',
+        '*://*.exolyt.com/*',
+        'https://backend.exolyt.com/*',
         'https://script.google.com/*',
         'https://script.googleusercontent.com/*'
     ],
     background: {service_worker: 'background.js'},
     content_scripts: [
         {
-            matches: ['*://*.instagram.com/*', '*://*.tiktok.com/*', '*://*.noxinfluencer.com/*'],
+            matches: ['*://*.instagram.com/*', '*://*.tiktok.com/*', '*://*.noxinfluencer.com/*', '*://*.exolyt.com/*'],
             js: ['content.js'],
             run_at: 'document_idle'
         }
@@ -38,6 +40,10 @@ export default {
         {
             resources: ['page-bridge.js'],
             matches: ['*://*.tiktok.com/*']
+        },
+        {
+            resources: ['exolyt-page-bridge.js'],
+            matches: ['*://*.exolyt.com/*']
         }
     ]
 }

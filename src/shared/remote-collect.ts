@@ -25,6 +25,7 @@ export const NOX_BACKFILL_PROFILES_REMOTE = 'nox_backfill_profiles_remote'
 export const NOX_COLLECT_TIKTOK_POOL_REMOTE = 'nox_collect_tiktok_pool_remote'
 export const NOX_PAUSE_AUTO_COLLECT_REMOTE = 'nox_pause_auto_collect_remote'
 export const NOX_RESUME_AUTO_COLLECT_REMOTE = 'nox_resume_auto_collect_remote'
+export const EXOLYT_SEARCH_COLLECT_REMOTE = 'exolyt_search_collect_remote'
 
 interface RemoteDownloadSummary {
     succeeded: number
