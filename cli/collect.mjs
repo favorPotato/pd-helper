@@ -5,7 +5,7 @@ import {CdpError} from './transport.mjs'
 import {reconnectSession} from './attach.mjs'
 import {emit, emitSynthetic, ttyLog, sleep, numFlag} from './io.mjs'
 import {exitFor} from './codes.mjs'
-import {ensureVideoLibDirs, videoExists, writeRawJson, moveVideoIntoLib} from './lib/video-lib.mjs'
+import {ensureVideoLibDirs, videoExists, writeRawJson, moveVideoIntoLib} from './video-lib.mjs'
 
 // 透传给 exolytSearchCollect 的筛选字段（url 走 --url，9 字段走 --param）
 const FILTER_KEYS = ['sort', 'likesMin', 'mood', 'dateStart', 'dateEnd', 'regions', 'hashtags', 'followers', 'accountType']

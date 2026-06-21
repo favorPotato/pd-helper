@@ -1,9 +1,8 @@
 import {existsSync, mkdirSync, readdirSync, renameSync, writeFileSync} from 'node:fs'
 import {join, resolve} from 'node:path'
+import {sleep} from './io.mjs'
 
 const PLATFORMS = new Set(['exolyt', 'tiktok'])
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function assertPlatform(platform) {
     if (!PLATFORMS.has(platform)) {

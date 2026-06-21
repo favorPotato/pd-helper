@@ -1,11 +1,12 @@
 import {parseArgs, usage} from './argv.mjs'
-import {cmdMethods, cmdList, cmdStatus, cmdCancel, cmdDevReload, cmdCollect, cmdIndex, cmdCategories} from './commands.mjs'
+import {cmdMethods, cmdList, cmdStatus, cmdCancel, cmdDevReload} from './commands.mjs'
 import {attachToServiceWorker} from './attach.mjs'
 import {CdpError} from './transport.mjs'
 import {exitFor} from './codes.mjs'
 import {emit, emitSynthetic, ttyLog, numFlag} from './io.mjs'
 import {runCall} from './loop.mjs'
 import {runSheetCommand} from './sheet.mjs'
+import {runExolytCommand, exolytNeedsSession} from './exolyt.mjs'
 
 // EPIPE 守卫：下游提前关闭管道时干净退出，否则默认抛 Unhandled error
 for (const s of [process.stdout, process.stderr]) {
@@ -22,15 +23,13 @@ async function main() {
         return 0
     }
 
-    // attach 前路由：sheet / index / categories 不经 SW/CDP（纯本地，index 读 raws/ 派生、categories 读 cli/assets）
+    // attach 前路由：sheet 及 exolyt 的本地子命令（index/categories）不经 SW/CDP
+    // —— index 读 raws/ 派生、categories 读 cli/assets；仅 exolyt collect 需 attach（见 exolytNeedsSession）
     if (args.cmd === 'sheet') {
         return await runSheetCommand(args)
     }
-    if (args.cmd === 'index') {
-        return cmdIndex(args)
-    }
-    if (args.cmd === 'categories') {
-        return cmdCategories(args)
+    if (args.cmd === 'exolyt' && !exolytNeedsSession(args.rest[0])) {
+        return await runExolytCommand(null, args)
     }
 
     // noinspection JSUnresolvedReference,JSUnresolvedVariable -- flags 由 parseArgs 动态填充，.cdp 来自 --cdp 命令行参数
@@ -61,8 +60,8 @@ async function main() {
                 return await cmdCancel(session, args)
             case 'dev-reload':
                 return await cmdDevReload(session, cdpUrl)
-            case 'collect':
-                return await cmdCollect(session, args)
+            case 'exolyt':
+                return await runExolytCommand(session, args)
             case 'call': {
                 const method = args.rest[0]
                 if (!method) {

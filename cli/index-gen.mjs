@@ -2,6 +2,7 @@ import {existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync} from 'n
 import {homedir} from 'node:os'
 import {join, resolve} from 'node:path'
 import {rawPath, videoExists} from './video-lib.mjs'
+import {exitFor} from './codes.mjs'
 
 // INDEX 独立生成（Epic 3 / FR-12·FR-13 / SM-4 / OQ-4）
 // 纯派生：只读 raws/* + 外部选品 JSON → 写 index/<YYYY-MM>.json，零状态文件、不回写 raw、不读 INDEX 自身。
@@ -174,7 +175,7 @@ export function cmdIndex(args) {
     const libRoot = resolveLibRoot(args)
     if (!existsSync(libRoot)) {
         console.error(`index: 视频库根不存在: ${libRoot}`)
-        return 5   // INVALID_PARAM
+        return exitFor('INVALID_PARAM')
     }
     const select = loadSelect(args.flags.select)
 
