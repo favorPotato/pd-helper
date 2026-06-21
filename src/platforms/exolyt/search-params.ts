@@ -1,12 +1,12 @@
 import {withPdCode} from '../../shared/cli-bridge/cs-runtime'
 import type {ExolytSearchBody, ExolytRawSearchInput} from './types'
 
-// 1.3 检索入参收口（CS 侧，纯函数）：三入口 → 前端名映射 → 9 字段组装 → 默认填充 → 白名单校验 → 纯 JSON body
-// 校验落位 CS 就近：非法值经 withPdCode(err,'INVALID_PARAM') 抛带 [INVALID_PARAM] 前缀，绝不静默回落默认（rule §枚举白名单）
-// 落 CS 而非 dispatcher 侧：校验对象是组装后的 body，组装在 CS，校验跟着 CS 最省一次「下发→回传重组」
+// 检索入参收口（CS 侧，纯函数）：三入口 → 前端名映射 → 组装 → 默认填充 → 白名单校验 → 纯 JSON body
+// 校验落 CS 就近：非法值经 withPdCode(err,'INVALID_PARAM') 抛带前缀错误，绝不静默回落默认；
+// 校验对象是组装后的 body，组装在 CS，校验跟着 CS 最省一次「下发→回传重组」。
 
 // 枚举白名单全集来自实地核对 exolyt 站点筛选面板（react-select option 底层 value）：
-// sort 6 值、mood null+3、accountType 0(不限)/1(已验证) —— 详见 Completion Notes
+// sort 6 值、mood null+3、accountType 0(不限)/1(已验证)
 const SORT_WHITELIST = ['views_most', 'views_least', 'likes_most', 'likes_least', 'newest', 'oldest'] as const
 const MOOD_WHITELIST = ['positive', 'neutral', 'negative'] as const
 const ACCOUNT_TYPE_WHITELIST = [0, 1] as const
@@ -15,7 +15,7 @@ const ACCOUNT_TYPE_WHITELIST = [0, 1] as const
 const FOLLOWERS_RE = /^\d+_\d+$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 
-// 默认 search 参数（AC2 拍板）：缺失才填、不覆盖入口值、不替代校验
+// 默认 search 参数：缺失才填、不覆盖入口值、不替代校验
 // regions 业务锁 BR 但工具层可配——故作默认而非硬编码常量，入口给值即用入口值
 const DEFAULT_REGIONS = ['BR']
 const DEFAULT_FOLLOWERS = '0_100000'
@@ -23,7 +23,7 @@ const DEFAULT_ACCOUNT_TYPE = 0
 const DEFAULT_LIKES_MIN = 1000
 const DEFAULT_SORT = 'likes_most'
 
-// 上限 200 硬约束（AC4）：page 固定单页、videoId 列表再 slice(0,200)
+// 上限 200 硬约束：试用账号硬顶 200，翻页合并去重到此即止
 export const SEARCH_RESULT_LIMIT = 200
 
 function invalid(reason: string): never {
@@ -80,8 +80,8 @@ function coerceNumber(raw: unknown): unknown {
     return raw
 }
 
-// 组装 body：缺失才填默认、入口给值不被覆盖；page 固定 1；hashtag 经 or:[{type:'hashtag',id}] 承载（后端真实契约）
-// page 取舍：实测 search.js body 含 page:1，epics「9 字段全集」未列 page；本 story 固定单页、不递增（AC4/AC6），不实现翻页
+// 组装 body：缺失才填默认、入口给值不被覆盖；page 默认 1（翻页由 searchPhase 逐页覆盖）；
+// hashtag 经 or:[{type:'hashtag',id}] 承载（后端真实契约，实测旧扁平 hashtags+searchMode 多值返回空）。
 export function buildSearchBody(input: ExolytRawSearchInput): ExolytSearchBody {
     // 空串标量与空数组皆视为「未给值」回落默认：URL 解析路径会带 ?areas= / ?dateStart= 等空值，
     // 若判为已给则空 regions:[] 静默丢 BR 业务锁、空串标量经 validate 误报 INVALID_PARAM。

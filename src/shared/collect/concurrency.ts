@@ -1,7 +1,6 @@
-// 固定大小并发池 + 并发数夹紧（Story 1.7 自 exolyt concurrency.ts 平移上移，行为等价）
-// 本模块为 exolyt 专用并发池——nox 博主采集为顺序翻页、不用本模块（FR-15）
+// 固定大小并发池 + 并发数夹紧。
 
-// SM-C1 反风控：默认并发保守留余量、触发 exolyt 限流/封号比慢更糟，勿为提速调高
+// 反风控：默认并发保守留余量、触发限流/封号比慢更糟，勿为提速调高
 export const DEFAULT_CONCURRENCY = 5
 // 上限为硬门——越界夹到 [1,15]，不得绕过提速
 export const MAX_CONCURRENCY = 15
@@ -31,7 +30,7 @@ export interface ConcurrencyResult {
 // 取每个 item 前查共享中止信号——已中止则停止取新 item 自然退出（不再发请求），其余 slot 一并感知收敛
 // worker 抛出（熔断 recordErr 达阈值 / 取消）→ 置共享中止位、记 reason，不再 reject 整池：
 //   其余 slot 见中止位后自然退出，池以「已完成结果」正常 resolve，回报 aborted+reason 供上层裁决
-// 已落数据由 worker 自身累加进外部数组——本池中止不清外部已采，调用方据返回数组保留已采（AC3 ④）
+// 已落数据由 worker 自身累加进外部数组——本池中止不清外部已采，调用方据返回数组保留已采
 export async function runWithConcurrency<T>(
     items: readonly T[],
     worker: (item: T, index: number) => Promise<void>,

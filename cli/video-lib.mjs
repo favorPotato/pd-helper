@@ -32,9 +32,7 @@ export function rawPath(libRoot, platform, videoId) {
 }
 
 // 列 raws/<platform>/ 下所有 <videoId>.json 的 videoId（去 .json 后缀）。
-// 作为 detail 续采的「node 端已落盘事实」基准——CS 据此把已落盘条目剔出待采，
-// 既不丢未落盘数据（含被幽灵 markDetailed 的）、又省掉对已落盘条目的 fetchDetail。
-// 目录不存在（首跑）返回空数组。
+// 作为 detail 续采的「node 端已落盘事实」基准，目录不存在（首跑）返回空数组。
 export function listRawVideoIds(libRoot, platform) {
     assertPlatform(platform)
     const dir = join(libRoot, 'raws', platform)
@@ -46,15 +44,38 @@ export function listRawVideoIds(libRoot, platform) {
     return ids
 }
 
+// 单一存在性判定规则：文件名 === videoId 或以 `${videoId}.` 开头。
+// videoExists 与 scanVideoIdSet 共用此函数，避免两份手抄判定漂移。
+function videoFileMatches(name, videoId) {
+    return name === videoId || name.startsWith(`${videoId}.`)
+}
+
 export function videoExists(libRoot, videoId) {
     assertVideoId(videoId)
     const dir = join(libRoot, 'videos')
     if (!existsSync(dir)) return false
-    const prefix = `${videoId}.`
     for (const name of readdirSync(dir)) {
-        if (name === videoId || name.startsWith(prefix)) return true
+        if (videoFileMatches(name, videoId)) return true
     }
     return false
+}
+
+// 预扫 videos/ 一次把已存在 videoId 收成 Set，供批量去重 O(1) 命中（替代逐条全目录扫描）。
+// 判存语义与 videoExists 一致：每个文件名拆出所有「点号前缀」+ 全名，任一等于待查 id 即视为已存在
+// （覆盖 `${id}.ext` 前缀匹配，且 id 自身可含点）。目录不存在（首跑）返回空 Set。
+export function scanVideoIdSet(libRoot) {
+    const set = new Set()
+    const dir = join(libRoot, 'videos')
+    if (!existsSync(dir)) return set
+    for (const name of readdirSync(dir)) {
+        set.add(name)
+        let dot = name.indexOf('.')
+        while (dot !== -1) {
+            set.add(name.slice(0, dot))
+            dot = name.indexOf('.', dot + 1)
+        }
+    }
+    return set
 }
 
 // 默认权限落盘（不 chmod）；已存在则跳过 = 存在性补采
@@ -94,8 +115,8 @@ export async function moveVideoIntoLib(downloadDir, libRoot, videoId, opts = {})
         if (r) return r
         await sleep(pollMs)
     }
-    // F4 续采漏洞修复：deadline 到点前的最后一段 sleep 内下载可能刚好完成（文件已无 .crdownload
-    // 却滞留 downloadDir 根目录）。退出前补扫一次归位 → 已下载完成的视频不因超时被判 missing 而重跑重下。
+    // deadline 到点前的最后一段 sleep 内下载可能刚好完成（无 .crdownload 却仍滞留根目录），
+    // 退出前补扫一次归位，使已下完的视频不因超时被判 missing 而重跑重下。
     const last = tryMove()
     if (last) return last
     return {moved: false}

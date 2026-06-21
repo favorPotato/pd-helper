@@ -1,9 +1,9 @@
-// 通用采集节奏/限流（Story 1.7 自 nox paginator.ts 的翻页节奏泛化上移，行为等价）
+// 通用采集节奏/限流。
 // 反风控：翻页越快越易触发限流/封号，节奏值为保守经验值，勿为提速调小
 import {sleepRandom} from '../timing'
 
-// 翻页节奏分级休眠（参数化自 nox paginator 的 pageNum%30 / pageNum%10 / 否则 三档）
-// 阈值/区间默认值即 nox 现行值；onProgress 在长休/中休前提示（与原 nox 文案一致由调用方传入或用默认）
+// 翻页节奏分级休眠（pageNum%longEvery / pageNum%midEvery / 否则 三档），默认值取 nox 现行经验值
+// onProgress 在长休/中休前提示
 export interface PageRhythmOptions {
     // 每多少页一次长休（默认 30）
     longEvery?: number
@@ -26,8 +26,8 @@ const DEFAULTS = {
     midHint: '中休 30~60秒...'
 }
 
-// 翻页成功后按页号决定休眠档位：长休 > 中休 > 短休（与 nox paginator 原 if/else 链等价）
-// pageNum 取「即将请求的下一页号」——与 nox 内 pageNum 自增后取模一致
+// 翻页成功后按页号决定休眠档位：长休 > 中休 > 短休
+// pageNum 取「即将请求的下一页号」（自增后取模）
 export async function sleepForPage(pageNum: number, onProgress: (msg: string) => void, opts: PageRhythmOptions = {}): Promise<void> {
     const longEvery = opts.longEvery ?? DEFAULTS.longEvery
     const midEvery = opts.midEvery ?? DEFAULTS.midEvery
@@ -46,7 +46,7 @@ export async function sleepForPage(pageNum: number, onProgress: (msg: string) =>
     }
 }
 
-// 错误退避：未达熔断阈值时单次错后短退避（与 nox paginator 原 sleepRandom(3000,6000) 等价）
+// 错误退避：未达熔断阈值时单次错后短退避
 export async function sleepAfterError(rangeMs: readonly [number, number] = [3000, 6000]): Promise<void> {
     await sleepRandom(rangeMs[0], rangeMs[1])
 }

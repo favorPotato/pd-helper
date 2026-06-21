@@ -31,14 +31,8 @@ async function ensureTaskAlive(session, taskId) {
     }
 }
 
-// 共享轮询骨架：runCall（emit 流 + exit code）与 runCallAndCollect（return 业务数据 / throw）的唯一真源。
-// 行为差异全由 handlers 注入，杜绝两份拷贝漂移：
-//   onFrame(f) -> {done:true, value} 表示遇终态帧需结束循环并以 value 收尾；返回 falsy 继续吞帧。
-//   onTerminal(kind, info) -> 必须 return 一个结束值或 throw；kind ∈
-//     'timeout' | 'task_lost'(info.message) | 'status_terminal'(info.status/errorCode) | 'reconnect_failed'(info.code/message)。
-//   onSeqSkip(info)（可选）：RingBuffer 溢出丢帧告警；info={expectedFrom,actualFirst,dropped}。
-//   onLoopError(e)（可选）：循环体抛出非预期错误时的收尾（runCall 转 emit+exit；collect 直接 rethrow）。
-// 三项硬能力（SIGINT→cancel、seq_skip 检测、3 次指数退避重连）一律内建，两个调用方共享。
+// runCall 与 runCallAndCollect 的共享轮询骨架，行为差异由 handlers 注入，避免两份拷贝漂移。
+// SIGINT→cancel、seq_skip 检测、3 次指数退避重连内建于此。
 async function pollTask(session, opts, handlers) {
     const callRes = await callPd(session, 'call', [opts.method, opts.params])
     const taskId = callRes.taskId
@@ -154,7 +148,7 @@ async function pollTask(session, opts, handlers) {
     }
 }
 
-// 流式监控：每帧 emit，遇终态以 exit code 收尾。供 main.mjs 的 run 命令使用。
+// 每帧 emit，遇终态以 exit code 收尾。
 export async function runCall(session, opts) {
     return await pollTask(session, opts, {
         onSeqSkip: (info) => emitSynthetic(info.taskId, 'progress', {
@@ -204,10 +198,8 @@ export async function runCall(session, opts) {
     })
 }
 
-// runCall 的「采集」变体：收到 result 帧 return 业务数据（落盘用），error/cancelled/timeout 一律抛 CdpError 由调用方归类。
-// 复用 pollTask 共享骨架 → 自动获得 SIGINT→cancel、seq_skip 丢帧告警、3 次指数退避重连。
-// result payload = {result: <CS 返回值>}（见 background.ts），故 f.data.result 即业务数据；?? f.data 兜底防 payload 形态变动。
-// onProgress：流式进度帧回调（如 exolytDetail 边采边落）；仅 progress 帧、传了回调时触发，未传时零变化。
+// runCall 的采集变体：result 帧 return 业务数据供落盘，error/cancelled/timeout 抛 CdpError 由调用方归类。
+// result payload = {result: <CS 返回值>}（见 background.ts），故取 f.data.result；?? f.data 兜底防 payload 形态变动。
 export async function runCallAndCollect(session, opts) {
     return await pollTask(session, opts, {
         onSeqSkip: (info) => {

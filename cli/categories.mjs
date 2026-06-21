@@ -3,9 +3,8 @@ import {fileURLToPath} from 'node:url'
 import {dirname, resolve} from 'node:path'
 import {exitFor} from './codes.mjs'
 
-// 分类→hashtags 映射资产随 CLI 发布（cli/assets/），扩展 bundle 不内嵌（OQ-5：默认 CLI 配置文件侧）
-// 相对本文件定位，不依赖 cwd——CLI 从任意目录跑都读得到
-const ASSET_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'assets', 'hashtags-BR-17cats.json')
+// 分类→hashtags 映射资产随 CLI 发布（cli/assets/），相对本文件定位不依赖 cwd
+const ASSET_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'assets', 'hashtags-br.json')
 
 function loadCategories() {
     const raw = JSON.parse(readFileSync(ASSET_PATH, 'utf8'))
@@ -25,8 +24,7 @@ function hashtagsForCategory(name) {
     return Array.isArray(entry.hashtags) ? entry.hashtags : []
 }
 
-// categories：无参列全部中文分类名（每行一个）；带参 <分类名> 吐该类 hashtags 逗号串（供直接塞进 collect --param hashtags=...）
-// 不经 SW/CDP，纯读 cli/assets 本地资产；未知分类 → INVALID_PARAM
+// 不经 SW/CDP，纯读 cli/assets 本地资产。无参列分类名；带参吐该类 hashtags 逗号串（供 collect --param hashtags=...）
 export function cmdCategories(args) {
     const name = args.rest[0]
     if (!name) {

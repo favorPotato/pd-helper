@@ -4,13 +4,11 @@ import {join, resolve} from 'node:path'
 import {rawPath} from './video-lib.mjs'
 import {exitFor} from './codes.mjs'
 
-// INDEX 独立生成（Epic 3 / FR-12·FR-13 / SM-4 / OQ-4）
 // 纯派生：只读 raws/* + 外部选品 JSON → 写 index/<YYYY-MM>.json，零状态文件、不回写 raw、不读 INDEX 自身。
 // 客观字段两次重生成须一致（幂等）；topComments 稳定排序（点赞降序，并列按 commentId 升序）。
-// 字段映射经 ~/Downloads/31402 真实 raw 逐条实测锁定（见各 derive 注释）。
 
-// ── 贴纸占位清洗：复用既有规则（commit cf605a7，src/platforms/tiktok/collector.ts:289-297）──
-// [贴纸] 为占位符：清成空格交空白折叠处理，纯贴纸清洗后为空串、整条剔除。mjs 不能 import ts 源，故同款复刻。
+// [贴纸] 为占位符：清成空格交空白折叠处理，纯贴纸清洗后为空串、整条剔除。
+// 规则同 src/platforms/tiktok/collector.ts，但 mjs 不能 import ts 源，故同款复刻。
 const STICKER_PLACEHOLDER = /\[贴纸\]/g
 
 function normalizeCommentText(value) {
@@ -49,8 +47,6 @@ function toYearMonth(value) {
     if (Number.isNaN(d.getTime())) return ''
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`
 }
-
-// ── 客观字段派生（来源经实测锁定）──
 
 // desc：主 tk `desc` → 兜底 exolyt `title`（exolyt 无 desc，标题文本在 title）
 function deriveDesc(ex, tk) {
@@ -120,7 +116,7 @@ function deriveTopComments(tk) {
     return rows.slice(0, 10).map((r) => r.text)
 }
 
-// ── 状态列：据散文件存在性组合派生（不据枚举）──
+// 状态列：据散文件存在性组合派生（不据枚举）
 const STATUS_FULL = 'full'                 // 三件套齐：exolyt raw + tiktok raw + video
 const STATUS_EXOLYT_ONLY = 'exolyt_only'   // 仅 exolyt 已采（tk 段未采/失败）
 const STATUS_PARTIAL = 'partial'           // 其他不齐组合（容错可辨）
@@ -154,10 +150,10 @@ function readJson(path) {
     }
 }
 
-// 一次性预扫三个目录构建查表集（F9：避免主循环内每条重扫目录 / 多次 existsSync）。
+// 一次性预扫三个目录构建查表集，避免主循环内每条重扫目录。
 //  - exolytRawIds / tiktokRawIds：raws/<platform>/ 下 <id>.json 的 id 集（去 .json）
 //  - videoMatch(id)：等价于 video-lib 的 videoExists 语义（文件名 === id 或以 `${id}.` 开头），
-//    用预扫的 videos 目录文件名集在本文件内 O(1) 判定（exact 全名集 + 各文件名的点号前缀集）。
+//    用 exact 全名集 + 各文件名的点号前缀集在本文件内 O(1) 判定。
 function scanLibDirs(libRoot) {
     const readNamesJson = (dir) => {
         const ids = new Set()
@@ -190,7 +186,6 @@ function scanLibDirs(libRoot) {
 }
 
 // 列举两平台 raws 目录里的全部 videoId（并集），不据任何枚举/状态文件。
-// 复用预扫得到的 raw id 集，避免重复 readdir（F9）。
 function listVideoIds(exolytRawIds, tiktokRawIds) {
     return [...new Set([...exolytRawIds, ...tiktokRawIds])].sort()
 }
@@ -248,7 +243,7 @@ export function cmdIndex(args) {
             status,
             statusLabel: STATUS_LABEL[status],
             presence,
-            // 外部选品并入（OQ-4）：按 videoId join，缺失留 null 不阻断
+            // 外部选品并入：按 videoId join，缺失留 null 不阻断
             viralType: sel.viralType ?? null,
             category: sel.category ?? null
         }

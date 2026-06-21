@@ -1,6 +1,5 @@
 // exolyt 浮窗采集的纯内存态：零落盘、关闭即止。
-// 续采靠 Sheets 远程去重（重开浮窗重新检索），故此处不持久化任何状态——
-// 内存丢失等价于"会话结束"，符合 spec「关闭即止、内存态丢弃」边界。
+// 续采靠 Sheets 远程去重（重开浮窗重新检索），故此处不持久化任何状态——内存丢失等价于会话结束。
 
 export type ExolytItemStatus = 'searched' | 'detailed' | 'failed' | 'zipped'
 
@@ -19,8 +18,6 @@ const items = new Map<string, ExolytCollectItem>()
 // 暂停标志：采集轮询每条前自查，true 时停在当前条目前（不中断已在途的单条）
 let paused = false
 
-// ---- 暂停/继续 ----
-
 export function isPaused(): boolean {
     return paused
 }
@@ -32,8 +29,6 @@ export function pause(): void {
 export function resume(): void {
     paused = false
 }
-
-// ---- 检索入列 ----
 
 // 本次检索得到的 videoId 批量入列：已在列表者跳过（同会话列表去重，以 items 为准），
 // 新条目以 searched 态落入。返回真正新增的条目（供浮窗日志报「本次新增 N」）。
@@ -48,8 +43,6 @@ export function addSearched(videoIds: string[]): ExolytCollectItem[] {
     }
     return added
 }
-
-// ---- 读 ----
 
 export function getItem(videoId: string): ExolytCollectItem | undefined {
     return items.get(videoId)
@@ -68,8 +61,8 @@ export function listRetryQueue(): ExolytCollectItem[] {
     return listByStatus('failed')
 }
 
-// detail 续采候选（两链路唯一口径）：基集 searched∪detailed，剔除 have 后即真·待采。
-// 纳入 detailed 是因 detail 被中断后续跑会把 searched 幽灵 markDetailed，仅取 searched 会漏掉这些条目。
+// detail 续采候选（两链路唯一口径）：基集 searched∪detailed，剔除 have 后即待采。
+// 纳入 detailed 是因 detail 被中断后续跑会把部分 searched 标为 detailed，仅取 searched 会漏掉这些条目。
 // have = 已确认完成集，由调用方按各自落盘语义给：CLI 传 node 已落盘集（raws/exolyt 实际文件），
 // 浮窗无磁盘、raw 直存内存，传「已具 exolytRaw 集」（其落盘等价物）。两边经此函数同口径，不再各写各的。
 export function listDetailCandidates(have: Set<string>): string[] {
@@ -107,8 +100,6 @@ export function getCounts(): ExolytStateCounts {
     return counts
 }
 
-// ---- 改 ----
-
 // 标采详情成功：附 exolytRaw、清残留 lastError、转 detailed
 export function markDetailed(videoId: string, exolytRaw: unknown): ExolytCollectItem | undefined {
     const item = items.get(videoId)
@@ -136,8 +127,6 @@ export function markFailed(videoId: string, lastError: string): ExolytCollectIte
     item.lastError = lastError
     return item
 }
-
-// ---- 删 ----
 
 // 移出列表：GONE/AUTH_WALL 终态跳过时摘除条目。摘除后该 id 可被重检索重新入列（去重以远程为准）。
 export function removeItem(videoId: string): boolean {

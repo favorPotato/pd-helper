@@ -1,13 +1,9 @@
 import {withPdCode} from '../../shared/cli-bridge/cs-runtime'
 import type {ExolytSearchParams, ExolytSearchResult, ExolytVideoDetail} from './types'
 
-// exolyt 后端 API 封装（1.2）：CS 端握手内聚于此（架构五层无 client.ts），借 page-bridge 走同源 JWT 发往 backend.exolyt.com
-// 范式 A：JWT 取值在 page-bridge 页面端完成（auth:true），token 不出页面上下文；本层只发「目标 url + auth 标志」
-// 错误归一：会话失效→LOGIN_REQUIRED、限流→RATE_LIMITED、握手失败/超时带 [CODE] 前缀，全经 withPdCode 打码
-
 const BACKEND_ORIGIN = 'https://backend.exolyt.com'
 
-// 单次 page_fetch 自身超时（对齐 tk pageFetch timeoutMs）；握手就绪超时对齐 tk client.ts 5s
+// 单次 page_fetch 自身超时；握手就绪超时
 const PAGE_FETCH_TIMEOUT_MS = 15000
 const BRIDGE_READY_TIMEOUT_MS = 5000
 
@@ -205,7 +201,7 @@ export async function exolytApiFetch(path: string, init: RequestInit = {}): Prom
 
 // search 响应条目遍历单一出口：收敛容器探测规则到此一处，extractVideoIds 与
 // collector.buildSearchDurationMap（取 duration）共用——避免容器名/字段名规则两份手抄、后端改名漏改一处。
-// 实测对账 examples/exolyt/search.js：真实结构为 data.videos[]；余路径留作宽松兜底（后端结构变更时不致全空）。
+// 实测真实结构为 data.videos[]；余路径留作宽松兜底（后端结构变更时不致全空）。
 // 返回首个「能提取出至少一条有效 videoId 对象」的容器中的对象条目；据「有 id 的对象」判定容器有效，
 // 防空 data.videos / 无 id 噪声数组短路掩盖后面真正带数据的容器。
 export function extractSearchItems(body: unknown): Array<Record<string, unknown>> {
@@ -223,7 +219,7 @@ export function extractSearchItems(body: unknown): Array<Record<string, unknown>
     return []
 }
 
-// 从后端 search 响应提取 videoId 列表（复用 extractSearchItems 单一出口）；videoId 强类型化属 1.3/1.4
+// 从后端 search 响应提取 videoId 列表（复用 extractSearchItems 单一出口）
 function extractVideoIds(body: unknown): string[] {
     return extractSearchItems(body)
         .map((item) => extractVideoId(item))
@@ -238,7 +234,7 @@ function extractVideoId(item: unknown): string {
     return typeof candidate === 'string' ? candidate : typeof candidate === 'number' ? String(candidate) : ''
 }
 
-// searchVideos = POST /video-insight/search：body 用后端名透传（不组装 9 字段/不校验/不映射/不填默认，属 1.3）
+// searchVideos = POST /video-insight/search：body 用后端名透传（不组装/不校验/不映射/不填默认）
 export async function searchVideos(params: ExolytSearchParams): Promise<ExolytSearchResult> {
     const raw = await exolytApiFetch('/video-insight/search', {
         method: 'POST',

@@ -1,5 +1,4 @@
-// 通用翻页骨架（Story 1.7 自 nox paginator.ts 泛化上移，行为等价）
-// 顺序翻页 + 目标计数停止 + 去重 + 分级节奏 + 连续错熔断 + 会话失效短路——nox 博主采集复用，exolyt 不翻页不用本模块
+// 通用翻页骨架：顺序翻页 + 目标计数停止 + 去重 + 分级节奏 + 连续错熔断 + 会话失效短路——nox 博主采集复用
 import {sleepForPage, sleepAfterError, type PageRhythmOptions} from './throttle'
 
 export type PaginateStop = 'target_reached' | 'no_more_pages' | 'circuit_broken' | 'session_expired'

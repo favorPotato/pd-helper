@@ -1,9 +1,9 @@
 export {}
 
-// 页面真实上下文脚本（IIFE）：CS 经 chrome.runtime.getURL('exolyt-page-bridge.js') 注入，借页面同源态发 fetch
-// 通道映射对齐 tk：exolyt/page_fetch → exolyt/page_fetch_result，就绪发 exolyt/page_bridge_ready
-// 范式 A（1.2）：auth:true 时本端单条消息内串「取同源 session.accessToken + 带 Bearer 发目标」两步
-// —— token 全程留在页面上下文、绝不经 postMessage 回 CS（更安全、最贴实测脚本 examples/exolyt/search.js）
+// 页面真实上下文脚本（IIFE）：CS 注入 exolyt-page-bridge.js，借页面同源态发 fetch。
+// 通道映射与 tk page-bridge 同构（改一处须同步另一处）：exolyt/page_fetch → exolyt/page_fetch_result，就绪发 exolyt/page_bridge_ready。
+// auth:true 时本端单条消息内串「取同源 session.accessToken + 带 Bearer 发目标」两步——
+// token 全程留在页面上下文、绝不经 postMessage 回 CS（安全约束）。
 type PageFetchMessage = {
     type: 'exolyt/page_fetch'
     requestId: string

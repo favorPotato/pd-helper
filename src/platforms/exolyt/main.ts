@@ -12,15 +12,15 @@ import {UiHelper} from './helpers'
 import * as collectState from './collect-state'
 import type {ExolytRawSearchInput} from './types'
 
-// import 红线（NFR-4/AC4）：仅 cs-runtime + remote-collect 常量 + sheets-sync（CS 安全，collector 已用）+ 同目录模块
-// 严禁 facade/persistence/business-dispatchers（含 chrome.tabs/storage.session）——进 CS 即崩
-// pd:invoke 仅经 chrome.runtime.sendMessage 发字符串 type + method 字面量，不 import 任何 SW 独占模块
+// import 红线：仅 cs-runtime + remote-collect 常量 + sheets-sync + 同目录模块。
+// 严禁 facade/persistence/business-dispatchers（含 chrome.tabs/storage.session）——进 CS 即崩；
+// pd:invoke 仅经 chrome.runtime.sendMessage 发字符串 type + method 字面量，不 import 任何 SW 独占模块。
 
 declare const window: Window & {
     __EXOLYT_HANDLER_LOADED__?: boolean
 }
 
-// 异常是否已带 pdCode（withPdCode 挂在 error.pdCode）——已带则不被 main 兜底码覆盖，保 collector 的 INVALID_PARAM 上行
+// 异常是否已带 pdCode——已带则不被 main 兜底码覆盖，保 collector 的 INVALID_PARAM 上行
 function hasPdCode(error: Error): boolean {
     return typeof (error as Error & {pdCode?: unknown}).pdCode === 'string'
 }
@@ -32,8 +32,8 @@ function initExolytMessageHandler(): void {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (!msg || typeof msg !== 'object') return
 
-        // 链路A 下载后写回：node 在视频下载完成后逐条 call，把 videoId 入队远程去重表格。
-        // 经此 exolyt CS（setup 已 startSyncWorker）入队即被 flush 到 Sheets。
+        // 链路A 下载后写回：node 在视频下载完成后逐条 call，把 videoId 入队远程去重表格，
+        // 经此 exolyt CS（setup 已 startSyncWorker）flush 到 Sheets。
         if (msg.type === EXOLYT_MARK_COLLECTED_REMOTE) {
             const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
             if (!taskId) {
@@ -54,8 +54,8 @@ function initExolytMessageHandler(): void {
             return true
         }
 
-        // search/detail 解耦——search 单段：searchPhase 得待采 ids → addSearched 累积进内存池（与浮窗 onSearch 共用）。
-        // result 帧回 {added, total}：本次新增、当前累计 searched 数；不发 detail（解耦由 node 自行编排）。
+        // search 单段：searchPhase 得待采 ids → addSearched 累积进内存池（与浮窗 onSearch 共用）。
+        // result 帧回 {added, total}；不发 detail，编排由 node 自行负责。
         if (msg.type === EXOLYT_SEARCH_REMOTE) {
             const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
             if (!taskId) {
@@ -83,9 +83,9 @@ function initExolytMessageHandler(): void {
             return true
         }
 
-        // search/detail 解耦——detail 单段：读内存池 searched 态 ids → detailPhase 双门过滤；
+        // detail 单段：读内存池 searched 态 ids → detailPhase 双门过滤；
         // 每条过门 detail 逐条流式 pushLog（kind=exolytDetail，边采边落给 node）并 markDetailed；
-        // result 帧回 {detailed, gated, aborted, reason}，透传 E2-B 的整批终止信号（连续验证码/熔断）。
+        // result 帧回 {detailed, gated, aborted, reason}，透传整批终止信号（连续验证码/熔断）。
         if (msg.type === EXOLYT_DETAIL_REMOTE) {
             const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
             if (!taskId) {
@@ -94,7 +94,7 @@ function initExolytMessageHandler(): void {
             }
             sendResponse({ok: true, accepted: true})
 
-            // node 端已落盘集（raws/exolyt 实际文件）——续采权威基准：剔出已落盘条目，剩余即真·待采。
+            // node 端已落盘集（raws/exolyt 实际文件）——续采权威基准：剔出已落盘条目，剩余即待采。
             const have = new Set(Array.isArray(msg.have) ? (msg.have as unknown[]).filter((v): v is string => typeof v === 'string') : [])
 
             void runFireAndForget(taskId, async (rt) => {
@@ -107,9 +107,9 @@ function initExolytMessageHandler(): void {
                         return {detailed: 0, gated: 0, aborted: false}
                     }
                     // 共用 CS detail 收口（与链路B collectDetailPhase 同一 helper）：onPassed 做实时 pushLog（边采边落给 node），
-                    // 内部 markDetailed + !aborted 时对被双门剔除的条目 removeItem（②终态剔除，防 node 重跑时 listDetailCandidates 重采）。
+                    // 内部 markDetailed + !aborted 时对被双门剔除的条目 removeItem（终态剔除，防 node 重跑时 listDetailCandidates 重采）。
                     const {result} = await runDetailWithCleanup(ids, rt, (detail) => {
-                        rt.pushLog({kind: 'exolytDetail', detail: {videoId: detail.videoId, raw: detail.raw}})
+                        rt.pushLog({kind: 'exolytDetail', __full: true, detail: {videoId: detail.videoId, raw: detail.raw}})
                     })
                     const reasonMsg = result.reason instanceof Error ? result.reason.message : (result.reason !== undefined ? String(result.reason) : undefined)
                     rt.log(`[exolyt] detail 段收口：过门 ${result.items.length}/${ids.length}${result.aborted ? '（整批终止：' + (reasonMsg ?? '') + '）' : ''}`)
@@ -147,25 +147,24 @@ function makeFloatRuntime(): CsRuntime {
 
 // CS 共用 detail 收口（链路A CLI detail 分支 / 链路B 浮窗 collectDetailPhase 共同入口，改一处须同步另一处）：
 // 内部 detailPhase 双门过滤 → 每条过门 detail 当场 markDetailed + 调可选 onPassed（链路A 用于 pushLog 实时落盘）；
-// 终态剔除（②）：!aborted 时对 ids 中未过门的条目 removeItem（被双门时长/图文剔除→不得留待采集合致重跑重采）；
+// 终态剔除：!aborted 时对 ids 中未过门的条目 removeItem（被时长/图文双门剔除→不得留待采集合致重跑重采）；
 // 中止（熔断/取消）：未处理条目既非过门也非被剔除——整段跳过 removeItem，保留可续采。
-// 返回 result 原样上抛，调用方各自收口（链路A 透传 {detailed,gated,aborted,reason} 给 node、链路B UiHelper.log 文案）。
 async function runDetailWithCleanup(
     ids: string[],
     rt: CsRuntime,
     onPassed?: (detail: ExolytVideoDetail) => void
 ): Promise<{result: DetailPhaseResult; passed: Set<string>}> {
     const passed = new Set<string>()
-    // 真·实时「采一个存一个」：detailPhase 每产出一条过门 detail 即回调，当场 markDetailed + onPassed；
+    // detailPhase 每产出一条过门 detail 即回调，当场 markDetailed + onPassed；
     // 存 detail 整体 {videoId, raw}（非仅 detail.raw）——与链路A collect.mjs 落盘一致，供 zip 内 raws/exolyt/{id}.json 解压即落库。
     const result = await detailPhase(ids, rt, {}, undefined, (detail) => {
         collectState.markDetailed(detail.videoId, detail)
         passed.add(detail.videoId)
         onPassed?.(detail)
     })
-    // 中止下未处理 id 既非过门也非被剔除——跳过 removeItem，保留可续采（与现 collectDetailPhase:168 一致）。
+    // 中止下未处理 id 既非过门也非被剔除——跳过 removeItem，保留可续采。
     if (!result.aborted) {
-        // ②终态剔除：ids 中未过门 = 被双门（时长/图文）剔除，移出候选，不得留在待采集合致 listDetailCandidates 重采。
+        // 终态剔除：ids 中未过门 = 被时长/图文双门剔除，移出候选，不得留在待采集合致 listDetailCandidates 重采。
         for (const id of ids) {
             if (!passed.has(id)) collectState.removeItem(id)
         }
@@ -178,7 +177,7 @@ async function runDetailWithCleanup(
 async function collectDetailPhase(rt: CsRuntime): Promise<void> {
     // 候选与 CLI detail 分支共用 listDetailCandidates（searched∪detailed 剔 have）。
     // 浮窗无 node 落盘，have=内存已具 raw 集（落盘等价物）：detailed 皆有 raw 被剔，故常态恒等于「仅 searched」，
-    // 但口径与链路A 一致、且对「detailed 却无 raw」的异常自动续采，不再各写各的。
+    // 但口径与链路A 一致、且对「detailed 却无 raw」的异常自动续采。
     const ids = collectState.listDetailCandidates(collectState.listVideoIdsWithRaw())
     if (ids.length === 0) {
         UiHelper.log('[exolyt] 无待采详情条目')
@@ -266,10 +265,10 @@ async function onPackVideo(): Promise<void> {
         let captchaStreak = 0
         let captchaAborted = false
         // 逐条采集循环不变量(链路A runTkPhase / 链路B onPackVideo 共同契约,改一处须同步另一处):
-        // ① 去重表写回一律 best-effort:产物落地后才写,写回抛错只记日志、绝不改条目状态(不得把已成功条目打回失败)。
-        // ② 终态剔除:被双门剔除/GONE/AUTH_WALL 的条目必须移出候选,不得留在待采集合致重跑重采。
-        // ③ 连续验证码 ≥3 整批终止(captchaStreak:仅成功清零、仅 CAPTCHA 累加、其余错误中性)。
-        // ④ 单条失败绝不中止整批(逐条 try/catch 继续下一条),除非触发 ③。
+        // 去重表写回一律 best-effort:产物落地后才写,写回抛错只记日志、绝不改条目状态(不得把已成功条目打回失败)；
+        // 终态剔除:被双门剔除/GONE/AUTH_WALL 的条目必须移出候选,不得留在待采集合致重跑重采；
+        // 连续验证码 ≥3 整批终止(captchaStreak:仅成功清零、仅 CAPTCHA 累加、其余错误中性)；
+        // 单条失败绝不中止整批(逐条 try/catch 继续下一条),除非触发连续验证码终止。
         for (const item of queue) {
             // 暂停=挂起等待（不再开新单条、保 busy 态），点「继续」恢复；关闭浮窗即止（CS 随之销毁）。
             // 非硬中断已发出的单条，故停在「当前条目前」。
@@ -289,7 +288,7 @@ async function onPackVideo(): Promise<void> {
                 }) as {ok?: boolean; code?: string; message?: string} | undefined
 
                 if (res?.ok) {
-                    // ①去重写回 best-effort：zip 已落地→先 markZipped 终态；入队抛错只记日志，
+                    // 去重写回 best-effort：zip 已落地→先 markZipped 终态；入队抛错只记日志，
                     // 绝不 markFailed 已 markZipped 的条目（否则打回 retry 队列→下次重新 packVideo→重复下载 zip）。
                     collectState.markZipped(id)
                     okCount += 1

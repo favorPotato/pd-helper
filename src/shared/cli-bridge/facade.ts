@@ -78,8 +78,8 @@ function pushLog(taskId: string, type: FrameType, data: Record<string, unknown>)
     if (!t) return
 
     // result 帧承载完整业务结果，豁免截断（否则大 itemStruct 会被砍坏）；
-    // exolytDetail 流式 progress 帧承载完整 detail.raw（边采边落给 node），同理豁免截断
-    const exemptTruncate = type === 'result' || data.kind === 'exolytDetail'
+    // 任意帧亦可声明 __full:true 主动免截断（需完整 payload 的流式帧自报，截断路径不识别具体业务 kind）
+    const exemptTruncate = type === 'result' || data.__full === true
     let payload = exemptTruncate ? data : truncateData(data)
     let frame: LogFrame = {
         v: 1,
