@@ -4,7 +4,7 @@ import {listPageTargets} from './attach.mjs'
 import {ttyLog} from './io.mjs'
 import {exitFor} from './codes.mjs'
 
-const PLATFORM_HOST_RE = /(?:tiktok|instagram|noxinfluencer)\.com/i
+const PLATFORM_HOST_RE = /(?:tiktok|instagram|noxinfluencer|exolyt)\.com/i
 
 export async function cmdMethods(session) {
     const methods = await callPd(session, 'methods', [])

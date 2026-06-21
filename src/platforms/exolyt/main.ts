@@ -3,6 +3,8 @@ import {runFireAndForget, withPdCode} from '../../shared/cli-bridge/cs-runtime'
 import {EXOLYT_SEARCH_REMOTE, EXOLYT_DETAIL_REMOTE, EXOLYT_MARK_COLLECTED_REMOTE} from '../../shared/remote-collect'
 import {enqueueUpsertVideos, startSyncWorker} from '../../shared/sheets-sync'
 import {searchPhase, detailPhase} from './collector'
+import type {DetailPhaseResult} from './collector'
+import type {ExolytVideoDetail} from './types'
 import {showDialog} from '../../shared/custom-dialog'
 import {checkAppsScriptHealth} from '../../shared/apps-script-client'
 import {delay} from '../../shared/timing'
@@ -104,10 +106,9 @@ function initExolytMessageHandler(): void {
                         rt.log('[exolyt] 无待采详情条目')
                         return {detailed: 0, gated: 0, aborted: false}
                     }
-                    // 真·实时「采一个存一个」：detailPhase 每产出一条过门 detail 即回调，
-                    // 当场 markDetailed + pushLog；异常中断时已回调的 detail 已落盘不丢。
-                    const result = await detailPhase(ids, rt, {}, undefined, (detail) => {
-                        collectState.markDetailed(detail.videoId, detail)
+                    // 共用 CS detail 收口（与链路B collectDetailPhase 同一 helper）：onPassed 做实时 pushLog（边采边落给 node），
+                    // 内部 markDetailed + !aborted 时对被双门剔除的条目 removeItem（②终态剔除，防 node 重跑时 listDetailCandidates 重采）。
+                    const {result} = await runDetailWithCleanup(ids, rt, (detail) => {
                         rt.pushLog({kind: 'exolytDetail', detail: {videoId: detail.videoId, raw: detail.raw}})
                     })
                     const reasonMsg = result.reason instanceof Error ? result.reason.message : (result.reason !== undefined ? String(result.reason) : undefined)
@@ -144,8 +145,36 @@ function makeFloatRuntime(): CsRuntime {
     }
 }
 
-// 详情段主体（onSearch 勾选「自动采集详情」与 onDetail 共用）：取续采候选 ids →
-// detailPhase 双门过滤 → 过门者 markDetailed、被剔者 removeItem。busy 态由调用方管理。
+// CS 共用 detail 收口（链路A CLI detail 分支 / 链路B 浮窗 collectDetailPhase 共同入口，改一处须同步另一处）：
+// 内部 detailPhase 双门过滤 → 每条过门 detail 当场 markDetailed + 调可选 onPassed（链路A 用于 pushLog 实时落盘）；
+// 终态剔除（②）：!aborted 时对 ids 中未过门的条目 removeItem（被双门时长/图文剔除→不得留待采集合致重跑重采）；
+// 中止（熔断/取消）：未处理条目既非过门也非被剔除——整段跳过 removeItem，保留可续采。
+// 返回 result 原样上抛，调用方各自收口（链路A 透传 {detailed,gated,aborted,reason} 给 node、链路B UiHelper.log 文案）。
+async function runDetailWithCleanup(
+    ids: string[],
+    rt: CsRuntime,
+    onPassed?: (detail: ExolytVideoDetail) => void
+): Promise<{result: DetailPhaseResult; passed: Set<string>}> {
+    const passed = new Set<string>()
+    // 真·实时「采一个存一个」：detailPhase 每产出一条过门 detail 即回调，当场 markDetailed + onPassed；
+    // 存 detail 整体 {videoId, raw}（非仅 detail.raw）——与链路A collect.mjs 落盘一致，供 zip 内 raws/exolyt/{id}.json 解压即落库。
+    const result = await detailPhase(ids, rt, {}, undefined, (detail) => {
+        collectState.markDetailed(detail.videoId, detail)
+        passed.add(detail.videoId)
+        onPassed?.(detail)
+    })
+    // 中止下未处理 id 既非过门也非被剔除——跳过 removeItem，保留可续采（与现 collectDetailPhase:168 一致）。
+    if (!result.aborted) {
+        // ②终态剔除：ids 中未过门 = 被双门（时长/图文）剔除，移出候选，不得留在待采集合致 listDetailCandidates 重采。
+        for (const id of ids) {
+            if (!passed.has(id)) collectState.removeItem(id)
+        }
+    }
+    return {result, passed}
+}
+
+// 详情段主体（链路B：onSearch 勾选「自动采集详情」与 onDetail 共用）：取续采候选 ids →
+// runDetailWithCleanup 共用收口 → UiHelper.log 文案。busy 态由调用方管理。
 async function collectDetailPhase(rt: CsRuntime): Promise<void> {
     // 候选与 CLI detail 分支共用 listDetailCandidates（searched∪detailed 剔 have）。
     // 浮窗无 node 落盘，have=内存已具 raw 集（落盘等价物）：detailed 皆有 raw 被剔，故常态恒等于「仅 searched」，
@@ -155,30 +184,13 @@ async function collectDetailPhase(rt: CsRuntime): Promise<void> {
         UiHelper.log('[exolyt] 无待采详情条目')
         return
     }
-    const result = await detailPhase(ids, rt)
-    const passed = new Set<string>()
-    for (const detail of result.items) {
-        // 存 detail 整体 {videoId, raw}（非仅 detail.raw）——与链路A collect.mjs:140 落盘一致，
-        // 供 zip 内 raws/exolyt/{id}.json 解压即落库 + Epic 3 index-gen 按同结构取数
-        collectState.markDetailed(detail.videoId, detail)
-        passed.add(detail.videoId)
-    }
-    // 中止（熔断/取消）下未处理的 id 既非过门也非被剔除——整段跳过 removeItem，
-    // 保留未处理条目可续采（被双门真正剔除的本次不清也无妨，下次重试重新判定，不误删）。
+    const {result, passed} = await runDetailWithCleanup(ids, rt)
     if (result.aborted) {
         const reasonMsg = result.reason instanceof Error ? result.reason.message : String(result.reason ?? '')
         UiHelper.log(`[exolyt] 采详情被中止：过门 ${passed.size} 条已采，未处理条目保留可续采；原因：${reasonMsg}`)
         return
     }
-    // ids 中未在返回里出现的 = 被双门（时长/图文）剔除，摘出列表
-    let dropped = 0
-    for (const id of ids) {
-        if (!passed.has(id)) {
-            collectState.removeItem(id)
-            dropped += 1
-        }
-    }
-    UiHelper.log(`[exolyt] 采详情完成：过门 ${passed.size} 条、剔除 ${dropped} 条`)
+    UiHelper.log(`[exolyt] 采详情完成：过门 ${passed.size} 条、剔除 ${ids.length - passed.size} 条`)
 }
 
 // 检索：弹窗确认（可勾选「自动采集详情」）→ 读当前页 URL → searchPhase 得待采 videoId[] →
@@ -253,6 +265,11 @@ async function onPackVideo(): Promise<void> {
         // VIDEO_DELETED/LOGIN_REQUIRED/其他错误中性（不加不清）——连续 3 次验证码判定环境被风控、整批终止。
         let captchaStreak = 0
         let captchaAborted = false
+        // 逐条采集循环不变量(链路A runTkPhase / 链路B onPackVideo 共同契约,改一处须同步另一处):
+        // ① 去重表写回一律 best-effort:产物落地后才写,写回抛错只记日志、绝不改条目状态(不得把已成功条目打回失败)。
+        // ② 终态剔除:被双门剔除/GONE/AUTH_WALL 的条目必须移出候选,不得留在待采集合致重跑重采。
+        // ③ 连续验证码 ≥3 整批终止(captchaStreak:仅成功清零、仅 CAPTCHA 累加、其余错误中性)。
+        // ④ 单条失败绝不中止整批(逐条 try/catch 继续下一条),除非触发 ③。
         for (const item of queue) {
             // 暂停=挂起等待（不再开新单条、保 busy 态），点「继续」恢复；关闭浮窗即止（CS 随之销毁）。
             // 非硬中断已发出的单条，故停在「当前条目前」。
@@ -272,10 +289,17 @@ async function onPackVideo(): Promise<void> {
                 }) as {ok?: boolean; code?: string; message?: string} | undefined
 
                 if (res?.ok) {
+                    // ①去重写回 best-effort：zip 已落地→先 markZipped 终态；入队抛错只记日志，
+                    // 绝不 markFailed 已 markZipped 的条目（否则打回 retry 队列→下次重新 packVideo→重复下载 zip）。
                     collectState.markZipped(id)
-                    await enqueueUpsertVideos('exolyt', [{videoId: id}])
                     okCount += 1
                     captchaStreak = 0  // 成功=环境活着，清零
+                    try {
+                        await enqueueUpsertVideos('exolyt', [{videoId: id}])
+                    } catch (enqueueError) {
+                        const em = enqueueError instanceof Error ? enqueueError.message : String(enqueueError)
+                        UiHelper.log(`[exolyt] 已出包但入队去重表失败（zip 已落地，条目保留 zipped 不重采）：${id} ${em}`)
+                    }
                 } else if (res?.code === 'VIDEO_DELETED' || res?.code === 'LOGIN_REQUIRED') {
                     collectState.removeItem(id)
                     removedCount += 1

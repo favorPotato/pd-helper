@@ -1,6 +1,6 @@
 import type {CsRuntime} from '../../shared/cli-bridge/cs-runtime'
 import type {ExolytRawSearchInput, ExolytVideoDetail} from './types'
-import {searchVideos, fetchDetail as defaultFetchDetail} from './api'
+import {searchVideos, fetchDetail as defaultFetchDetail, extractSearchItems} from './api'
 import {resolveSearchBody, parseSearchUrl, SEARCH_RESULT_LIMIT} from './search-params'
 import {clampConcurrency, runWithConcurrency} from '../../shared/collect/concurrency'
 import {makeCircuitBreaker} from '../../shared/collect/circuit-breaker'
@@ -23,7 +23,7 @@ async function loadCollectedVideoIdSet(): Promise<Set<string>> {
 }
 
 // 链路A 编排入口：三入口 → 映射 → 默认 → 校验 → 组装 9 字段 body → 调 searchVideos → ≤200 videoId
-// → 1.4 接力：就地并发池 + 连续 3 错熔断 并发调 fetchDetail → 时长门过滤 → 返回过门 detail 列表交 1.5
+// → 1.4 接力：就地并发池 + 漏桶熔断（错+1/成功-1 封顶 0，错多于成功才熔断）并发调 fetchDetail → 时长门过滤 → 返回过门 detail 列表交 1.5
 // 本 story 终点 = 过门 detail 列表；不落盘（1.5）/不入队（1.6）/不下视频（链路B）/不推进 checkpoint（1.5）
 export interface ExolytCollectInput {
     rawUrl?: string
@@ -32,7 +32,7 @@ export interface ExolytCollectInput {
     concurrency?: number
 }
 
-// 连续错熔断阈值（沿用 nox paginator 的 3，FR-15 不复用 nox 文件就地另写）
+// 漏桶熔断阈值（沿用 nox paginator 的 3，FR-15 不复用 nox 文件就地另写）：错+1/成功-1 封顶 0，水位 >=3 熔断
 const CIRCUIT_BREAKER_THRESHOLD = 3
 
 // 时长硬门阈值（ms）：FB/IG 上传硬约束。Task 0 经窗口 31402 真实 GET /videos/{id} 实测——
@@ -66,20 +66,11 @@ function readContentType(raw: unknown): number | null {
 }
 
 // search 响应每条已带 duration（ms，实测；contentType 不带）。构建 videoId→duration 供 detail 前时长门预剔。
+// 容器探测/取键复用 api.extractSearchItems 单一出口（F7：杜绝第二份手抄）；本函数仅在提取出的条目上再取 duration。
 // 缺 duration 的不入 map → 保守不前置剔、留 detail 后时长门兜底
 function buildSearchDurationMap(raw: unknown): Map<string, number> {
     const map = new Map<string, number>()
-    if (!raw || typeof raw !== 'object') return map
-    const record = raw as Record<string, unknown>
-    const data = record.data && typeof record.data === 'object' ? record.data as Record<string, unknown> : undefined
-    // 跳过空数组继续找有数据的容器（与 api.ts extractVideoIds 的长度守卫一致）——
-    // 防空 data.videos 短路掩盖后面 record.videos 等真正带数据的数组
-    const candidates = [data?.videos, record.videos, record.items, record.results]
-    const list = candidates.find((c): c is unknown[] => Array.isArray(c) && c.length > 0)
-    if (!list) return map
-    for (const item of list) {
-        if (!item || typeof item !== 'object') continue
-        const r = item as Record<string, unknown>
+    for (const r of extractSearchItems(raw)) {
         const id = r.id ?? r.videoId ?? r.video_id
         const dur = r.duration
         if ((typeof id === 'string' || typeof id === 'number') && typeof dur === 'number' && Number.isFinite(dur)) {
@@ -162,7 +153,7 @@ export interface DetailPhaseResult {
 }
 
 // detail 段单独触发口（链路B 浮窗「采详情」按钮 / 链路A CLI detail 段共用）：
-// 输入待采 videoId 列表 → 就地并发池 + 连续 3 错熔断 并发调 fetchDetail → 双门过滤（时长/图文）
+// 输入待采 videoId 列表 → 就地并发池 + 漏桶熔断（错+1/成功-1 封顶 0，错多于成功才熔断）并发调 fetchDetail → 双门过滤（时长/图文）
 // 终点 = 过门 detail + 中止信号（不入队，入队归调用方）。不依赖 searchPhase，可单独调。
 export async function detailPhase(
     videoIds: string[],
@@ -192,7 +183,7 @@ export async function detailPhase(
         await rt.waitWhilePaused?.()
         try {
             const detail = await fetchDetail(id)
-            // 成功返回即重置连续错计数——时长门剔除走成功路径、与熔断正交（AC4）
+            // 成功返回即漏桶 -1（封顶 0，不清零）——时长门剔除走成功路径、与熔断正交（AC4）
             breaker.recordOk()
 
             // 两门并列：任一门未过即丢弃，不 push 进 gated；时长 / 图文各自计数
@@ -211,9 +202,9 @@ export async function detailPhase(
                 onItem?.(detail)
             }
         } catch (error) {
-            // 仅 fetchDetail 抛错才算「错」参与连续计数；达阈值 recordErr 抛出（透传带 [CODE] 原 error，熔断不新增码）
+            // 仅 fetchDetail 抛错才算「错」参与漏桶计数；桶满（错多于成功，count>=阈值）recordErr 抛出（透传带 [CODE] 原 error，熔断不新增码）
             breaker.recordErr(error)
-            // 未达阈值：单条错不中止整批（连续计数保留，下条成功会 recordOk 重置）
+            // 桶未满：单条错不中止整批（漏桶水位保留，后续成功逐次 recordOk -1 抵消，错多于成功才累积触发）
         } finally {
             done += 1
             if (done % HEARTBEAT_EVERY === 0 || done === videoIds.length) {

@@ -14,10 +14,15 @@ export async function persistMeta(meta: TaskMeta, opts?: {throttle?: boolean}): 
         if (Date.now() - last < HEARTBEAT_THROTTLE_MS) return
     }
     lastWriteAt.set(meta.taskId, Date.now())
+    // 持久化副本剔除 result：本兜底持久化仅供 SW 重启后识别 orphaned 任务（只读 taskId/status），不需结果体。
+    // 单采整份 itemStruct 约 100–200KB，留着会无谓挤占 chrome.storage.session 配额（10MB 硬上限）。
+    // 必须浅拷贝后剔除——meta 是 runtime 内存对象引用，原地 delete 会误伤 callAndWait/listTasks 读的真 result。
+    const persisted: TaskMeta = {...meta, result: undefined}
     try {
-        await chrome.storage.session.set({[KEY_PREFIX + meta.taskId]: meta})
-    } catch {
-        // session 不可写时放弃，不影响主流程
+        await chrome.storage.session.set({[KEY_PREFIX + meta.taskId]: persisted})
+    } catch (e) {
+        // session 不可写（多为配额超限）时放弃，不影响主流程；记一行便于日后诊断配额，不再静默吞
+        console.warn(`[pd-helper] persistMeta 写入失败（taskId=${meta.taskId}）：`, e)
     }
 }
 

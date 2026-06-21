@@ -1,97 +1,16 @@
 import {resolve} from 'node:path'
 import {homedir} from 'node:os'
-import {callPd} from './rpc.mjs'
 import {CdpError} from './transport.mjs'
-import {reconnectSession} from './attach.mjs'
-import {emit, emitSynthetic, ttyLog, sleep, numFlag} from './io.mjs'
+import {emit, emitSynthetic, ttyLog, numFlag} from './io.mjs'
 import {exitFor} from './codes.mjs'
+import {runCallAndCollect} from './loop.mjs'
 import {ensureVideoLibDirs, videoExists, writeRawJson, moveVideoIntoLib, listRawVideoIds} from './video-lib.mjs'
 
 // 透传给 exolytSearch 的筛选字段（url 走 --url，9 字段走 --param）
 const FILTER_KEYS = ['sort', 'likesMin', 'mood', 'dateStart', 'dateEnd', 'regions', 'hashtags', 'followers', 'accountType']
-const TERMINAL_STATUS = new Set(['done', 'cancelled', 'error', 'orphaned'])
 
-// loop.mjs 的 runCall 收到 result 帧只 emit、不回值；本变体复用同一 tail 轮询骨架，
-// 但 result 帧 return 业务结果给调用方落盘。result payload = {result: <CS 返回值>}（见 background.ts:418），
-// 故 f.data.result 即业务数据；?? f.data 兜底防 payload 形态变动。
-// error/cancelled/timeout 一律抛 CdpError，由调用方 try/catch 归类。
-async function runCallAndCollect(session, opts) {
-    const callRes = await callPd(session, 'call', [opts.method, opts.params])
-    const taskId = callRes.taskId
-    ttyLog(`[pd-helper-cli] started taskId=${taskId} tabId=${callRes.tabId ?? 'n/a'}`)
-
-    let lastSeq = 0
-    let lastStatusAt = 0
-    const startedAt = Date.now()
-    const pollIntervalMs = opts.pollIntervalMs || 2000
-    const statusIntervalMs = opts.statusIntervalMs || 30000
-
-    async function call(method, args) {
-        try {
-            return await callPd(session, method, args)
-        } catch (e) {
-            if (!(e instanceof CdpError)) throw e
-            if (e.code !== 'CDP_DISCONNECTED') throw e
-            await reconnectSession(session)
-            const list = await callPd(session, 'listTasks', [{all: true}]).catch(() => [])
-            if (!list.some(t => t.taskId === taskId)) {
-                throw new CdpError('TASK_LOST', `task ${taskId} not found after reconnect`)
-            }
-            return await callPd(session, method, args)
-        }
-    }
-
-    while (true) {
-        if (Date.now() - startedAt > opts.timeoutMs) {
-            try { await call('cancel', [taskId]) } catch { /* ignore */ }
-            throw new CdpError('TIMEOUT', `exceeded ${opts.timeoutMs}ms`)
-        }
-
-        const tail = await call('tail', [taskId, lastSeq])
-
-        for (const f of tail.logs) {
-            if (f.type === 'result') return f.data.result ?? f.data
-            if (f.type === 'cancelled') throw new CdpError('CANCELLED', `task ${taskId} cancelled`)
-            if (f.type === 'error') {
-                throw new CdpError(String(f.data.code || 'UNKNOWN_ERROR'), String(f.data.message || 'task error'))
-            }
-            // 流式进度帧回调（如 exolytDetail 边采边落）：仅 progress 帧、传了 onProgress 时触发；
-            // 未传回调（tkFetchVideo/exolytMarkCollected 等）时行为零变化。
-            if (opts.onProgress && f.type === 'progress' && f.data) opts.onProgress(f.data)
-        }
-        lastSeq = tail.nextSeq
-
-        if (tail.hasMore) continue
-
-        if (Date.now() - lastStatusAt > statusIntervalMs) {
-            const status = await call('status', [taskId])
-            if ('error' in status) throw new CdpError('TASK_LOST', String(status.error))
-            if (TERMINAL_STATUS.has(status.status)) {
-                if (status.status === 'cancelled') throw new CdpError('CANCELLED', `task ${taskId} cancelled`)
-                if (status.status === 'error') throw new CdpError(status.errorCode || 'UNKNOWN_ERROR', 'task error')
-                if (status.status === 'orphaned') throw new CdpError('TASK_LOST', 'task became orphaned')
-                // done 但本轮 tail 未见 result 帧——多为「瞬时 done」竞态：CS 秒回（如候选 0 返 {detailed:0}），
-                // node 在 tail 取到 result 帧前就轮到 status 检查（首轮 lastStatusAt=0 尤甚）。SW 侧 finalizeTask
-                // 把 result 帧与 done 态同步入 buffer（facade finalizeTask），故 done 后补一次 tail 必能取到迟到 result。
-                // 仍取不到才是真 buffer 溢出无 result，抛 TASK_LOST。
-                const finalTail = await call('tail', [taskId, lastSeq])
-                for (const f of finalTail.logs) {
-                    if (f.type === 'result') return f.data.result ?? f.data
-                    if (f.type === 'cancelled') throw new CdpError('CANCELLED', `task ${taskId} cancelled`)
-                    if (f.type === 'error') {
-                        throw new CdpError(String(f.data.code || 'UNKNOWN_ERROR'), String(f.data.message || 'task error'))
-                    }
-                    if (opts.onProgress && f.type === 'progress' && f.data) opts.onProgress(f.data)
-                }
-                lastSeq = finalTail.nextSeq
-                throw new CdpError('TASK_LOST', 'task done without result frame')
-            }
-            lastStatusAt = Date.now()
-        }
-
-        await sleep(pollIntervalMs)
-    }
-}
+// runCallAndCollect 已与 loop.mjs 的 runCall 统一到共享 pollTask 骨架（见 loop.mjs），
+// 自动具备 SIGINT→cancel / seq_skip 丢帧告警 / 3 次指数退避重连，不再有拷贝漂移。
 
 // CS 端 ExolytVideoDetail.videoId / tk itemStruct.id —— 两平台 videoId 字段名不同，分别取
 function exolytVideoId(detail) {
@@ -145,6 +64,11 @@ async function runTkPhase(session, ctx, videoIds) {
     // GONE/登录墙/其他错误中性（不加不清）——连续 3 次验证码判定环境被风控、整批终止。
     let captchaStreak = 0
     let captchaAborted = false
+    // 逐条采集循环不变量(链路A runTkPhase / 链路B onPackVideo 共同契约,改一处须同步另一处):
+    // ① 去重表写回一律 best-effort:产物落地后才写,写回抛错只记日志、绝不改条目状态(不得把已成功条目打回失败)。
+    // ② 终态剔除:被双门剔除/GONE/AUTH_WALL 的条目必须移出候选,不得留在待采集合致重跑重采。
+    // ③ 连续验证码 ≥3 整批终止(captchaStreak:仅成功清零、仅 CAPTCHA 累加、其余错误中性)。
+    // ④ 单条失败绝不中止整批(逐条 try/catch 继续下一条),除非触发 ③。
     for (const id of videoIds) {
         if (videoExists(libRoot, id)) {
             tkSkippedVideo += 1
@@ -160,6 +84,26 @@ async function runTkPhase(session, ctx, videoIds) {
                 ttyLog(`[pd-helper-cli] 远程去重补写回失败 ${id}（已存在视频，best-effort）: ${e instanceof Error ? e.message : String(e)}`)
             }
             captchaStreak = 0  // 已存在=本地成功命中，证明前序环境活着，清零
+            continue
+        }
+        // F4 续采漏洞修复：videos/ 无此 id，但上轮可能已下载完成、仅因 moveVideoIntoLib 超时滞留在
+        // downloadDir 根目录（孤儿）。重下前先抢救一次（timeoutMs:0 = 纯单次扫描归位，不等待下载）。
+        // 命中即视同已存在 → 不再 tkFetchVideo 重新下载，杜绝「超时→重跑重下 + 留孤儿」。
+        const rescue = await moveVideoIntoLib(downloadDir, libRoot, id, {timeoutMs: 0})
+        if (rescue.moved) {
+            tkSkippedVideo += 1
+            videoMoved += 1
+            ttyLog(`[pd-helper-cli] 抢救已下载未归位视频 ${id}（上轮下载超时滞留根目录），跳过重下`)
+            try {
+                await runCallAndCollect(session, {
+                    method: 'exolytMarkCollected',
+                    params: {videoId: id},
+                    timeoutMs, pollIntervalMs, statusIntervalMs
+                })
+            } catch (e) {
+                ttyLog(`[pd-helper-cli] 远程去重补写回失败 ${id}（抢救归位，best-effort）: ${e instanceof Error ? e.message : String(e)}`)
+            }
+            captchaStreak = 0
             continue
         }
         try {

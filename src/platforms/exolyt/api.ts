@@ -203,22 +203,31 @@ export async function exolytApiFetch(path: string, init: RequestInit = {}): Prom
     }
 }
 
-// 从后端 search 响应提取 videoId 列表——实测对账 examples/exolyt/search.js：真实结构为 data.videos[]、videoId 字段名为 id
-// 列首选 data.videos，余路径留作宽松兜底（后端结构变更时不致全空）；videoId 强类型化属 1.3/1.4
-function extractVideoIds(body: unknown): string[] {
+// search 响应条目遍历单一出口：收敛容器探测规则到此一处，extractVideoIds 与
+// collector.buildSearchDurationMap（取 duration）共用——避免容器名/字段名规则两份手抄、后端改名漏改一处。
+// 实测对账 examples/exolyt/search.js：真实结构为 data.videos[]；余路径留作宽松兜底（后端结构变更时不致全空）。
+// 返回首个「能提取出至少一条有效 videoId 对象」的容器中的对象条目；据「有 id 的对象」判定容器有效，
+// 防空 data.videos / 无 id 噪声数组短路掩盖后面真正带数据的容器。
+export function extractSearchItems(body: unknown): Array<Record<string, unknown>> {
     if (!body || typeof body !== 'object') return []
     const record = body as Record<string, unknown>
     const data = record.data && typeof record.data === 'object' ? record.data as Record<string, unknown> : undefined
     const containers = [data?.videos, record.videos, record.items, record.results, record.data, body]
     for (const container of containers) {
-        if (Array.isArray(container)) {
-            const ids = container
-                .map((item) => extractVideoId(item))
-                .filter((id): id is string => Boolean(id))
-            if (ids.length) return ids
-        }
+        if (!Array.isArray(container)) continue
+        const items = container.filter(
+            (item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object'
+        )
+        if (items.some((item) => extractVideoId(item))) return items
     }
     return []
+}
+
+// 从后端 search 响应提取 videoId 列表（复用 extractSearchItems 单一出口）；videoId 强类型化属 1.3/1.4
+function extractVideoIds(body: unknown): string[] {
+    return extractSearchItems(body)
+        .map((item) => extractVideoId(item))
+        .filter((id): id is string => Boolean(id))
 }
 
 // 实测：search item / detail 顶层均以 id 为 videoId 字段；保留 videoId/video_id 兜底应对结构差异

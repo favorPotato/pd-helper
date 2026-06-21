@@ -1,7 +1,7 @@
 import {existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs'
 import {homedir} from 'node:os'
 import {join, resolve} from 'node:path'
-import {rawPath, videoExists} from './video-lib.mjs'
+import {rawPath} from './video-lib.mjs'
 import {exitFor} from './codes.mjs'
 
 // INDEX 独立生成（Epic 3 / FR-12·FR-13 / SM-4 / OQ-4）
@@ -154,17 +154,45 @@ function readJson(path) {
     }
 }
 
-// 列举两平台 raws 目录里的全部 videoId（并集），不据任何枚举/状态文件
-function listVideoIds(libRoot) {
-    const ids = new Set()
-    for (const platform of ['exolyt', 'tiktok']) {
-        const dir = join(libRoot, 'raws', platform)
-        if (!existsSync(dir)) continue
+// 一次性预扫三个目录构建查表集（F9：避免主循环内每条重扫目录 / 多次 existsSync）。
+//  - exolytRawIds / tiktokRawIds：raws/<platform>/ 下 <id>.json 的 id 集（去 .json）
+//  - videoMatch(id)：等价于 video-lib 的 videoExists 语义（文件名 === id 或以 `${id}.` 开头），
+//    用预扫的 videos 目录文件名集在本文件内 O(1) 判定（exact 全名集 + 各文件名的点号前缀集）。
+function scanLibDirs(libRoot) {
+    const readNamesJson = (dir) => {
+        const ids = new Set()
+        if (!existsSync(dir)) return ids
         for (const name of readdirSync(dir)) {
             if (name.endsWith('.json')) ids.add(name.slice(0, -5))
         }
+        return ids
     }
-    return [...ids].sort()
+    const exolytRawIds = readNamesJson(join(libRoot, 'raws', 'exolyt'))
+    const tiktokRawIds = readNamesJson(join(libRoot, 'raws', 'tiktok'))
+
+    // videos 目录：全名集 + 每个文件名的所有「点号前缀」集（覆盖 `${id}.` 前缀匹配，且 id 自身可含点）
+    const videoExact = new Set()
+    const videoDotPrefix = new Set()
+    const videosDir = join(libRoot, 'videos')
+    if (existsSync(videosDir)) {
+        for (const name of readdirSync(videosDir)) {
+            videoExact.add(name)
+            let dot = name.indexOf('.')
+            while (dot !== -1) {
+                videoDotPrefix.add(name.slice(0, dot))
+                dot = name.indexOf('.', dot + 1)
+            }
+        }
+    }
+    const videoMatch = (id) => videoExact.has(id) || videoDotPrefix.has(id)
+
+    return {exolytRawIds, tiktokRawIds, videoMatch}
+}
+
+// 列举两平台 raws 目录里的全部 videoId（并集），不据任何枚举/状态文件。
+// 复用预扫得到的 raw id 集，避免重复 readdir（F9）。
+function listVideoIds(exolytRawIds, tiktokRawIds) {
+    return [...new Set([...exolytRawIds, ...tiktokRawIds])].sort()
 }
 
 // 外部选品旁路 JSON：{[videoId]:{viralType,category}}；缺失/非法不阻断（返回空映射）
@@ -181,7 +209,8 @@ export function cmdIndex(args) {
     }
     const select = loadSelect(args.flags.select)
 
-    const videoIds = listVideoIds(libRoot)
+    const {exolytRawIds, tiktokRawIds, videoMatch} = scanLibDirs(libRoot)
+    const videoIds = listVideoIds(exolytRawIds, tiktokRawIds)
     const buckets = new Map()   // 'YYYY-MM' | 'unknown' → entries[]
 
     let withExolyt = 0
@@ -193,9 +222,9 @@ export function cmdIndex(args) {
         const exPath = rawPath(libRoot, 'exolyt', videoId)
         const tkPath = rawPath(libRoot, 'tiktok', videoId)
         const presence = {
-            exolyt: existsSync(exPath),
-            tiktok: existsSync(tkPath),
-            video: videoExists(libRoot, videoId)
+            exolyt: exolytRawIds.has(videoId),
+            tiktok: tiktokRawIds.has(videoId),
+            video: videoMatch(videoId)
         }
         // exolyt 落库为 {videoId, raw}（见 ExolytVideoDetail），派生字段实际在 raw 下，故下沉一层取 raw
         const exDoc = presence.exolyt ? asObject(readJson(exPath)) : null

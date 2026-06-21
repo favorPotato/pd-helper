@@ -76,8 +76,8 @@ export async function moveVideoIntoLib(downloadDir, libRoot, videoId, opts = {})
     const pollMs = opts.pollMs || 500
     const prefix = `${videoId}.`
     const videosDir = join(libRoot, 'videos')
-    const deadline = Date.now() + timeoutMs
-    while (Date.now() < deadline) {
+    // 单次扫描：downloadDir 根目录下若已有完成（无 .crdownload）的同 id 文件即归位。
+    const tryMove = () => {
         const names = existsSync(downloadDir) ? readdirSync(downloadDir) : []
         const matched = names.filter((n) => n === videoId || n.startsWith(prefix))
         const downloading = matched.some((n) => n.endsWith('.crdownload'))
@@ -86,7 +86,17 @@ export async function moveVideoIntoLib(downloadDir, libRoot, videoId, opts = {})
             renameSync(join(downloadDir, done), join(videosDir, done))
             return {moved: true, name: done}
         }
+        return null
+    }
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+        const r = tryMove()
+        if (r) return r
         await sleep(pollMs)
     }
+    // F4 续采漏洞修复：deadline 到点前的最后一段 sleep 内下载可能刚好完成（文件已无 .crdownload
+    // 却滞留 downloadDir 根目录）。退出前补扫一次归位 → 已下载完成的视频不因超时被判 missing 而重跑重下。
+    const last = tryMove()
+    if (last) return last
     return {moved: false}
 }
