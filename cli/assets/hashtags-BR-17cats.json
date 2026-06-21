@@ -1,0 +1,97 @@
+{
+  "meta": {
+    "market": "BR",
+    "lang": "pt-BR 主导, 部分英文通用标签",
+    "perCategory": 20,
+    "source": "8200 条 exolyt BR 数据(_ht_pool_global.json) + 4 类补采(fighting/dance/christianity/fitness) + WebSearch 2026 本地化核实",
+    "note": "已剔除引流噪声(fy/fyp/foryou/parati/viral/tiktok/edit/capcut/brasil/creatorsearchinsight/vaiprofycaramba/floptok),已甄别剔除非巴西内容(舞蹈的墨西哥 cumbia/huapangos 等)。每类 hashtags 为 20 个主标签(覆盖多子维度),alt 为 5 个备选。抓取时大小写不敏感。",
+    "crossCategoryDuplicates": "已互斥化(标签=分类采集): neymar/vinijr 判给足球(本土剧改用 vidasparalelas/nikolasferreira); gospel 判给基督教(音乐改用 trap); reflexao 判给基督教(情感改用 pai)。17 类主表 hashtags 现两两不重复,可直接按标签即分类采集。注意 valetudo 在本土剧指剧名 Vale Tudo,与格斗的搏击义同名跨义,采到的视频需按内容甄别。"
+  },
+  "categories": {
+    "足球": {
+      "dimensions": "总类/世界杯(含2026)/球迷夺冠梗/国家队/球星(三代分散)/本土联赛+豪门/南美赛事/技巧集锦进球/草根足球/贴纸册梗",
+      "hashtags": ["futebol","copadomundo","copadomundo2026","rumoaohexa","selecaobrasileira","neymar","vinijr","endrick","brasileirao","flamengo","corinthians","palmeiras","libertadores","futebolbrasileiro","golaco","skillsfootball","footballedit","futsal","futebolderua","albumdacopa"],
+      "alt": ["brasileiraoserieA","vinicius","santos","worldcup2026","fifaworldcup"]
+    },
+    "格斗": {
+      "dimensions": "赛事品牌/总类/巴西本地化/巴西球星+梗称/国际球星/柔术缠斗/拳击(葡英)/泰拳搏击/KO瞬间集锦/武术文化",
+      "hashtags": ["ufc","mma","ufcbrasil","alexpereira","poatan","charlesoliveira","charlesdobronxs","conormcgregor","iliatopuria","jiujitsu","bjj","grappling","boxe","boxing","muaythai","kickboxing","nocaute","knockout","ufcedit","artesmarciais"],
+      "alt": ["maxholloway","jonjones","lutador","valetudo","carlosprates"]
+    },
+    "健身运动": {
+      "dimensions": "健身房环境/训练动作/巴西举铁文化(maromba)/健美竞技/增肌目标/激励剪辑/体态身材/减脂饮食/女性向健身",
+      "hashtags": ["academia","gym","gymtok","treino","treinoemcasa","musculacao","maromba","bodybuilding","fisiculturismo","hipertrofia","gymrat","gymmotivation","gymedit","shape","emagrecimento","dieta","antesedepois","treinodegluteo","oldschool","gymgirl"],
+      "alt": ["gymworkout","transformation","bodybuilder","treinopesado","fitnessbrasil"]
+    },
+    "音乐": {
+      "dimensions": "本土流派(funk/sertanejo/forró/pagode/samba/MPB/arrocha/piseiro/pisadinha/brega-funk/gospel)/国际流行/歌词/翻唱/现场/爆红歌曲+艺人/混音",
+      "hashtags": ["musica","funk","sertanejo","forro","pagode","samba","mpb","arrocha","funkbrasil","piseiro","pisadinha","bregafunk","ramtchum","anacastela","popmusic","lyrics","cover","aovivo","trap","remix"],
+      "alt": ["rap","musicasparabiscoitar","vitorfernandes","playlist","gospel"]
+    },
+    "舞蹈": {
+      "dimensions": "本土舞种(passinho/funk/quadrilha)/爆红挑战/教学/编舞/街舞/钢管舞/互动挑战 (已剔墨西哥 cumbia/huapangos)",
+      "hashtags": ["dancinha","danca","coreografia","dancechallenge","passinho","passinhodojamal","dancesesouber","dancinhasdotiktok","soudomorro","tutorial","funkdance","breakdance","poledance","stepup","baile","eladancaeudanco","dancatiktok","quadrilhajunina","aiamor","copadomundodanca"],
+      "alt": ["ballet","dancinhas","danceduo","festajunina","danco"]
+    },
+    "韩流": {
+      "dimensions": "不同团体(BTS/BP/SKZ/ENHYPEN/TWICE/aespa/NewJeans/LSF)/爱豆个人/应援/K-drama/剪辑二创/直拍/舞蹈翻跳/本地社群",
+      "hashtags": ["kpop","bts","blackpink","straykids","enhypen","twice","aespa","newjeans","lesserafim","jungkook","lisa","jimin","btsarmy","kdrama","dorama","kpopedit","kdramaedit","fancam","kpopdancechallenge","kpopbrasil"],
+      "alt": ["jennie","taehyung","babymonster","comeback","dancecover"]
+    },
+    "日系-二次元": {
+      "dimensions": "泛动漫/受众/剪辑/漫画/cosplay/经典长番(火影海贼龙珠)/当季热番(JJK S3/芙莉莲/胆大党)/角色/运动番",
+      "hashtags": ["anime","animeedit","otaku","manga","cosplay","cosplayer","naruto","onepiece","jujutsukaisen","jjk","gojo","demonslayer","dragonball","attackontitan","haikyuu","bluelock","jojo","sololeveling","frieren","dandadan"],
+      "alt": ["kimetsunoyaiba","hunterxhunter","tokyorevengers","oshinoko","sakamotodays"]
+    },
+    "游戏": {
+      "dimensions": "平台(Roblox)/BR国民手游(FF含本地)/沙盒大逃杀/米哈游二游/电竞FPS/Supercell/端游3A/足球游戏/实况泛游戏",
+      "hashtags": ["roblox","freefire","freefirebrasil","gaming","gameplay","minecraft","fortnite","genshinimpact","honkaistarrail","valorant","brawlstars","clashroyale","gta","gta6","eafc","pokemon","residentevil","godofwar","dandysworld","cs2"],
+      "alt": ["fifa","garenafreefire","robloxedit","valorantclips","mobilelegends"]
+    },
+    "欧美影视": {
+      "dimensions": "泛电影/流媒体/超英(漫威DC)/迪士尼星战哈波/怀旧(Y2K)/当季热播(怪奇S5/亢奋S3/黑袍S5/星期三S3)/经典剧/青春剧/角色剪辑",
+      "hashtags": ["movie","netflix","primevideo","marvel","dc","disney","nostalgia","2000s","y2k","strangerthings","strangerthingsedit","euphoria","theboys","harrypotter","starwars","friends","greysanatomy","outerbanks","wednesday","edwardcullen"],
+      "alt": ["filme","euphoriaedit","theboysedit","hbomax","brooklyn99"]
+    },
+    "美妆-颜值-穿搭": {
+      "dimensions": "化妆/教程/护肤/女装穿搭/每日穿搭/颜值蜕变/发型(卷发短发趋势)/美甲/红毯时尚",
+      "hashtags": ["makeup","maquiagem","makeuptutorial","grwm","skincare","autocuidado","fashion","moda","modafeminina","outfit","lookdodia","outfitideas","glowup","looksmax","hairstyle","cabelo","cabelocacheado","cortecurto","unhas","metgala"],
+      "alt": ["metgala2026","perfumetiktok","dicasdebeleza","loira","beleza"]
+    },
+    "巴西本土剧-真人秀": {
+      "dimensions": "多位顶流网红/名人(Virginia/Jojo/Neymar/Vini/Anitta/Deolane/Larissa/Luva/Nathalia)/两大真人秀(A Fazenda/BBB)/电视剧/八卦名人争议快讯",
+      "hashtags": ["virginia","virginiaezefelipe","jojotodynho","vidasparalelas","nikolasferreira","anitta","deolanebezerra","larissamanoela","luvadepedreiro","nathaliavalente","afazenda","bbb26","realityshow","novelasglobo","valetudo","fofoca","fofocas","famosos","polemica","noticias"],
+      "alt": ["virginiafonceca","celebridades","jojo","neymar","vinijr"]
+    },
+    "情感": {
+      "dimensions": "情侣/异地恋/两性关系/爱情语录/暗示/心情状态/失恋/思念/情绪宣泄/反思/亲情(母女)/情人节/暗恋",
+      "hashtags": ["amor","casal","casaltiktok","namoro","namoroadistancia","relacionamento","frases","frasesdeamor","indireta","status","termino","saudade","desabafo","pai","sentimentos","familia","mae","maeefilha","diadosnamorados","crush"],
+      "alt": ["reflexaododia","namorados","fundodefrases","vidaamorosa","reflexao"]
+    },
+    "搞笑": {
+      "dimensions": "泛搞笑梗/巴西本土梗/闹腾恶搞(zoeira)/沙雕post/黑色幽默/段子笑话/配音模仿/反讽/游戏梗/综艺热梗",
+      "hashtags": ["humor","meme","comedia","memes","funny","humorbrasileiro","memesbr","memesbrasil","zoeira","zueirasemlimites","shitpostbrasil","humornegro","piadas","dublagem","imitacao","ironia","humortiktok","videosengracados","robloxmemes","bbb"],
+      "alt": ["engracado","zueirasemfim","risada","memestiktok","standup"]
+    },
+    "美食": {
+      "dimensions": "泛美食/食谱/巴西菜系/六月节庆食(festajunina旺季)/国民甜点/烤肉正餐/小吃/果切/探店",
+      "hashtags": ["comida","receita","receitafacil","culinariabrasileira","festajunina","saojoao","comidajunina","bolodemilho","pacoca","brigadeiro","doce","sobremesa","bolo","churrasco","feijoada","lanche","pizza","macadoamor","frutas","restaurante"],
+      "alt": ["sobremesafacil","canjica","pamonha","cozinha","tapioca"]
+    },
+    "萌宠": {
+      "dimensions": "狗/猫/泛宠物/热门犬种(金毛腊肠迷你杜宾)/巴西特色土狗(caramelo/viralata)/幼崽/搞笑动物/领养/动物泛",
+      "hashtags": ["cachorro","gato","dog","cat","pet","catsoftiktok","petsoftiktok","goldenretriever","dachshund","salsicha","pinscher","viralata","caramelo","filhote","funnydog","cachorrosengracados","gatosengracados","dogtok","adocao","animais"],
+      "alt": ["cachorros","gatos","petlover","shihtzu","cachorrosalsicha"]
+    },
+    "知识科普": {
+      "dimensions": "冷知识/历史/数学/自然科学(物理化学生物天文)/应试备考(ENEM)/平台教育生态/讲解者/时事科普(hantavirus)/知识钩子",
+      "hashtags": ["curiosidades","historia","matematica","ciencia","aprendanotiktok","escola","estudos","enem","vestibular","professor","fatos","historiasdetiktok","biologia","fisica","quimica","astronomia","hantavirus","sabiaque","educacao","voceeducado"],
+      "alt": ["geografia","conhecimento","estudandotiktok","universo","dicasdeestudo"]
+    },
+    "基督教": {
+      "dimensions": "耶稣上帝/圣经经文/信仰祷告/福音传福音/教会/天主教派 vs 福音派/讲道/灵修反思/社群标签",
+      "hashtags": ["jesus","deus","biblia","fe","oracao","evangelho","igreja","evangelico","catolicos","louvor","pregacao","reflexao","gospel","nossasenhora","jesuscristo","cristaosnotiktok","palavradedeus","jesusteama","evangelizacao","devocional"],
+      "alt": ["jesuslovesyou","amem","jovenscristaos","meditacaodapalavra","igrejacatolica"]
+    }
+  }
+}

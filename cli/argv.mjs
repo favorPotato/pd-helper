@@ -63,6 +63,8 @@ Commands:
   methods                             List available methods
   sheet <action> [--param k=v ...]    Call an Apps Script / Google Sheets action directly (HTTP, no browser); complex payloads via --payload '<json>'
   collect [--url <u>] [--param k=v]   Two-phase collect: exolyt search→detail, then serial tk fetch; raws+videos to --root
+  index [--root|--seq] [--select <p>] Derive index/<YYYY-MM>.json from raws/ (local, no browser; idempotent)
+  categories [<name>]                 List category names (one per line); with a name, print its hashtags comma-joined for collect --param hashtags=...
   dev-reload                          Reload the extension SW and refresh matching tabs (dev only)
 
 Global options:
@@ -80,5 +82,9 @@ Examples:
   pd-helper-cli sheet upsertNoxPage --payload '{"url":"https://...","pageNum":3}'
   pd-helper-cli collect --param sort=likes_most --param likesMin=10000 --root ./video-lib
   pd-helper-cli collect --url 'https://exolyt.com/...' --root ./video-lib
+  pd-helper-cli index --seq 31402
+  pd-helper-cli index --root ./video-lib --select ./select.json
+  pd-helper-cli categories
+  pd-helper-cli categories 足球
 `
 }

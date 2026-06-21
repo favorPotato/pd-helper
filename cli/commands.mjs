@@ -3,9 +3,30 @@ import {connectWs} from './transport.mjs'
 import {listPageTargets} from './attach.mjs'
 import {ttyLog} from './io.mjs'
 import {exitFor} from './codes.mjs'
+import {listCategoryNames, hashtagsForCategory} from './lib/categories.mjs'
 
 // 两段式采集编排（exolyt 检索→detail 落盘，再串行 tk 单采）—— 实现在 collect.mjs，此处 re-export 统一命令入口
 export {cmdCollect} from './collect.mjs'
+
+// INDEX 独立生成（Epic 3 / FR-12·13）—— 纯本地派生，不经 SW/CDP；实现在 lib/index-gen.mjs
+export {cmdIndex} from './lib/index-gen.mjs'
+
+// categories：无参列全部中文分类名（每行一个）；带参 <分类名> 吐该类 hashtags 逗号串（供直接塞进 collect --param hashtags=...）
+// 不经 SW/CDP，纯读 cli/assets 本地资产；未知分类 → INVALID_PARAM
+export function cmdCategories(args) {
+    const name = args.rest[0]
+    if (!name) {
+        process.stdout.write(listCategoryNames().join('\n') + '\n')
+        return 0
+    }
+    const tags = hashtagsForCategory(name)
+    if (tags === null) {
+        console.error(`categories: 未知分类 "${name}"；可用分类见 "categories"（无参）`)
+        return exitFor('INVALID_PARAM')
+    }
+    process.stdout.write(tags.join(',') + '\n')
+    return 0
+}
 
 const PLATFORM_HOST_RE = /(?:tiktok|instagram|noxinfluencer)\.com/i
 

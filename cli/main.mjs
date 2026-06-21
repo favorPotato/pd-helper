@@ -1,5 +1,5 @@
 import {parseArgs, usage} from './argv.mjs'
-import {cmdMethods, cmdList, cmdStatus, cmdCancel, cmdDevReload, cmdCollect} from './commands.mjs'
+import {cmdMethods, cmdList, cmdStatus, cmdCancel, cmdDevReload, cmdCollect, cmdIndex, cmdCategories} from './commands.mjs'
 import {attachToServiceWorker} from './attach.mjs'
 import {CdpError} from './transport.mjs'
 import {exitFor} from './codes.mjs'
@@ -22,9 +22,15 @@ async function main() {
         return 0
     }
 
-    // attach 前路由：sheet 不经 SW/CDP
+    // attach 前路由：sheet / index / categories 不经 SW/CDP（纯本地，index 读 raws/ 派生、categories 读 cli/assets）
     if (args.cmd === 'sheet') {
         return await runSheetCommand(args)
+    }
+    if (args.cmd === 'index') {
+        return cmdIndex(args)
+    }
+    if (args.cmd === 'categories') {
+        return cmdCategories(args)
     }
 
     // noinspection JSUnresolvedReference,JSUnresolvedVariable -- flags 由 parseArgs 动态填充，.cdp 来自 --cdp 命令行参数
