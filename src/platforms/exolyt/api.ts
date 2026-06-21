@@ -62,6 +62,13 @@ function registerPageFetchHandler(): void {
     })
 }
 
+// 复位就绪状态：清 window 残留标志与缓存 promise，下一次 injectPageBridge 即重走注入+握手。
+// 仅由 pageFetch 超时（确定失败）调用——页面端注入脚本自防重，重注入时若监听器尚在则只补发一次 ready、不重建。
+function resetBridgeReady(): void {
+    window.__EXOLYT_BRIDGE_READY__ = false
+    window.__EXOLYT_BRIDGE_READY_PROMISE__ = null
+}
+
 // 注入 page-bridge 并等就绪：已就绪直 resolve、并发共享同一 Promise、5s 超时 reject、.finally 失败清空允许重试
 // exolyt 与 tk 差异：无 CAPTCHA 检测、注入产物名为 exolyt-page-bridge.js
 function injectPageBridge(): Promise<void> {
@@ -124,6 +131,9 @@ async function pageFetch(url: string, init: RequestInit, auth: boolean): Promise
     return await new Promise<PageFetchPayload>((resolve, reject) => {
         const timer = window.setTimeout(() => {
             pageFetchPending.delete(requestId)
+            // 桥失效兜底：postMessage 无人应答而超时，说明页面端监听器已随 SPA 软导航/dev-reload 丢失而 window 标志仍残留。
+            // 复位就绪标志与缓存 promise，使下一次 pageFetch 重走注入+握手——仅在此确定失败路径触发，正常往返不受影响。
+            resetBridgeReady()
             reject(new Error('page_fetch_timeout'))
         }, PAGE_FETCH_TIMEOUT_MS)
 

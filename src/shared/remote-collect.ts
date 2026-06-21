@@ -26,6 +26,9 @@ export const NOX_COLLECT_TIKTOK_POOL_REMOTE = 'nox_collect_tiktok_pool_remote'
 export const NOX_PAUSE_AUTO_COLLECT_REMOTE = 'nox_pause_auto_collect_remote'
 export const NOX_RESUME_AUTO_COLLECT_REMOTE = 'nox_resume_auto_collect_remote'
 export const EXOLYT_SEARCH_COLLECT_REMOTE = 'exolyt_search_collect_remote'
+export const EXOLYT_PACK_VIDEO_REMOTE = 'exolyt_pack_video_remote'
+// 链路A：node 在视频下载完成后逐条 call，将 videoId 写回远程去重表格（与链路B 口径一致：下载完成才写）
+export const EXOLYT_MARK_COLLECTED_REMOTE = 'exolyt_mark_collected_remote'
 
 interface RemoteDownloadSummary {
     succeeded: number

@@ -94,7 +94,9 @@ function deriveHashtags(ex, tk) {
 
 // 发布月份：主 tk `createTime`（unix 秒字符串，权威发布时间）→ 兜底 exolyt `uploadDate`（ISO）
 function derivePublishYearMonth(ex, tk) {
-    const fromTk = tk && tk.createTime !== undefined ? toYearMonth(tk.createTime) : ''
+    // createTime 为 0/'0'（缺值占位）时按 unix 秒会落 1970-01 错桶，故仅正有效值才解析，否则兜底 exolyt
+    const tkSec = toFiniteNumber(tk?.createTime)
+    const fromTk = tkSec !== null && tkSec > 0 ? toYearMonth(tk.createTime) : ''
     if (fromTk) return fromTk
     return toYearMonth(ex?.uploadDate)
 }
@@ -195,7 +197,9 @@ export function cmdIndex(args) {
             tiktok: existsSync(tkPath),
             video: videoExists(libRoot, videoId)
         }
-        const ex = presence.exolyt ? asObject(readJson(exPath)) : null
+        // exolyt 落库为 {videoId, raw}（见 ExolytVideoDetail），派生字段实际在 raw 下，故下沉一层取 raw
+        const exDoc = presence.exolyt ? asObject(readJson(exPath)) : null
+        const ex = asObject(exDoc?.raw)
         const tk = presence.tiktok ? asObject(readJson(tkPath)) : null
 
         if (presence.exolyt) withExolyt += 1

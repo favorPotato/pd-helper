@@ -105,6 +105,19 @@ function closeEphemeralTabFor(taskId: string): void {
     setTimeout(() => void chrome.tabs.remove(tabId).catch(() => undefined), EPHEMERAL_TAB_CLOSE_DELAY_MS)
 }
 
+// callAndWait 的终态回执（pd:invoke 用）——taskId → resolver，finalizeTask 终态时一次性触发
+type InvokeResult = { ok: boolean; result?: unknown; code?: string; message?: string }
+const pendingWaits = new Map<string, (r: InvokeResult) => void>()
+
+function settleWait(taskId: string, t: TaskRuntime): void {
+    const waiter = pendingWaits.get(taskId)
+    if (!waiter) return
+    pendingWaits.delete(taskId)
+    waiter(t.meta.status === 'done'
+        ? {ok: true, result: t.meta.result}
+        : {ok: false, code: t.meta.error?.code ?? 'UNKNOWN_ERROR', message: t.meta.error?.message ?? ''})
+}
+
 function finalizeTask(taskId: string, status: TerminalStatus, frameType: FrameType, frameData: Record<string, unknown>): void {
     const t = tasks.get(taskId)
     if (!t) return
@@ -122,6 +135,7 @@ function finalizeTask(taskId: string, status: TerminalStatus, frameType: FrameTy
     }
     pushLog(taskId, frameType, frameData)
     void persistMeta(t.meta)
+    settleWait(taskId, t)
     scheduleGc(taskId)
 }
 
@@ -304,6 +318,16 @@ function createFacade(): PdFacade {
                 delay(TAB_ID_WAIT_MS).then(() => meta.tabId)
             ])
             return {taskId, tabId}
+        },
+
+        async callAndWait(method, params) {
+            const {taskId} = await this.call(method, params)
+            return new Promise<InvokeResult>((resolve) => {
+                pendingWaits.set(taskId, resolve)
+                // race：dispatch 可能在 call 返回前已 finalize，注册后补查一次终态
+                const t = tasks.get(taskId)
+                if (t && TERMINAL.has(t.meta.status)) settleWait(taskId, t)
+            })
         },
 
         async tail(taskId, sinceSeq) {

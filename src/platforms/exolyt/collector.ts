@@ -5,7 +5,6 @@ import {resolveSearchBody, parseSearchUrl, SEARCH_RESULT_LIMIT} from './search-p
 import {clampConcurrency, runWithConcurrency} from '../../shared/collect/concurrency'
 import {makeCircuitBreaker} from '../../shared/collect/circuit-breaker'
 import {withPdCode} from '../../shared/cli-bridge/cs-runtime'
-import {enqueueUpsertVideos} from '../../shared/sheets-sync'
 
 
 // 远程去重权威 = SW 端 get_collected_video_ids（platform='exolyt'），不落本地状态文件
@@ -73,7 +72,10 @@ function buildSearchDurationMap(raw: unknown): Map<string, number> {
     if (!raw || typeof raw !== 'object') return map
     const record = raw as Record<string, unknown>
     const data = record.data && typeof record.data === 'object' ? record.data as Record<string, unknown> : undefined
-    const list = [data?.videos, record.videos, record.items, record.results].find(Array.isArray) as unknown[] | undefined
+    // 跳过空数组继续找有数据的容器（与 api.ts extractVideoIds 的长度守卫一致）——
+    // 防空 data.videos 短路掩盖后面 record.videos 等真正带数据的数组
+    const candidates = [data?.videos, record.videos, record.items, record.results]
+    const list = candidates.find((c): c is unknown[] => Array.isArray(c) && c.length > 0)
     if (!list) return map
     for (const item of list) {
         if (!item || typeof item !== 'object') continue
@@ -87,11 +89,13 @@ function buildSearchDurationMap(raw: unknown): Map<string, number> {
     return map
 }
 
-export async function collectExolyt(
+// search 段单独触发口（链路B 浮窗「检索」按钮 / 链路A collectExolyt 内部首段共用）：
+// 三入口 → 映射 → 默认 → 校验 → 组 9 字段 body → searchVideos → ≤200 videoId → 远程去重剔 + 前置时长/图文预剔
+// 终点 = 待采 videoId 列表（不发 detail、不入队）。不依赖 detailPhase，可单独调。
+export async function searchPhase(
     params: ExolytCollectInput,
-    rt: CsRuntime,
-    deps: ExolytCollectDeps = {}
-): Promise<ExolytVideoDetail[]> {
+    rt: CsRuntime
+): Promise<string[]> {
     rt.throwIfCancelled()
 
     // URL 入口优先：粘前端筛选 URL → 解析为后端名原始输入；否则用直传的条件表单/CLI KV
@@ -102,17 +106,35 @@ export async function collectExolyt(
     rt.log(`[exolyt] search body 组装完成 sort=${body.sort} regions=${body.regions.join(',')} hashtags=${body.or?.length ?? 0}`)
 
     rt.throwIfCancelled()
-    // body 为纯 JSON 可序列化对象（string/number/null/array），不含 Headers/AbortSignal/函数——避免 postMessage 结构化克隆静默丢字段
-    const result = await searchVideos({...body})
-
-    // ≤200 硬上限：page 固定单页不递增，后端单页即便 >200 也在此截断守上限
-    const searched = result.videoIds.slice(0, SEARCH_RESULT_LIMIT)
+    // 翻页拿满上限：后端单页约 100、试用账号硬顶 200——拉 page 1..N 合并去重到 SEARCH_RESULT_LIMIT 即止（不突破 200）。
+    // body 纯 JSON 可序列化（避免 postMessage 结构化克隆丢字段）；逐页覆盖 page 翻页。
+    const PAGE_HINT = 100  // 后端单页约定条数，仅用于"不满页=到底"判定，避免无谓多请求
+    const seenSearch = new Set<string>()
+    const searched: string[] = []
+    const searchDurationById = new Map<string, number>()
+    let rawTotal = 0
+    for (let page = 1; searched.length < SEARCH_RESULT_LIMIT; page += 1) {
+        rt.throwIfCancelled()
+        const pageResult = await searchVideos({...body, page})
+        const ids = pageResult.videoIds
+        rawTotal += ids.length
+        for (const [k, v] of buildSearchDurationMap(pageResult.raw)) searchDurationById.set(k, v)
+        const before = searched.length
+        for (const id of ids) {
+            if (searched.length >= SEARCH_RESULT_LIMIT) break
+            const key = String(id)
+            if (seenSearch.has(key)) continue
+            seenSearch.add(key)
+            searched.push(id)
+        }
+        // 到底即停：空页 / 不满页（后端无更多）/ 本页零新增（全重复，防死循环）
+        if (ids.length === 0 || ids.length < PAGE_HINT || searched.length === before) break
+    }
 
     rt.throwIfCancelled()
     // detail 前用 search 自带的 duration 预剔省请求：① 去重剔已采；② 超时长 duration>60000；
     // ③ 图文 duration<=0（图文 duration=0，与 contentType=150 捆绑）。缺 duration 不前置剔，留 detail 后兜底。
     // contentType 不在 search 响应，detail 后图文门仍保留（双保险——search 未见过图文项，不全信 duration<=0）
-    const searchDurationById = buildSearchDurationMap(result.raw)
     const collected = await loadCollectedVideoIdSet()
     let preOverDuration = 0
     let preImage = 0
@@ -126,10 +148,30 @@ export async function collectExolyt(
         return true
     })
     const dedupDropped = searched.length - videoIds.length - preOverDuration - preImage
-    rt.log(`[exolyt] 检索 ${result.videoIds.length}、截断 ${searched.length}；去重剔 ${dedupDropped}、前置超时长剔 ${preOverDuration}、前置图文(dur≤0)剔 ${preImage}，待采 ${videoIds.length} 进 detail`)
+    rt.log(`[exolyt] 检索 ${rawTotal}、取 ${searched.length}（上限 ${SEARCH_RESULT_LIMIT}）；去重剔 ${dedupDropped}、前置超时长剔 ${preOverDuration}、前置图文(dur≤0)剔 ${preImage}，待采 ${videoIds.length} 进 detail`)
 
+    return videoIds
+}
+
+// detail 段结果：items=过门 detail；aborted=是否因熔断/取消中止；reason=中止原因（带 [CODE]）。
+// 中止信号必须透传给调用方裁决——CLI 据此恢复失败语义、浮窗据此跳过误删清理（不可在此吞掉）。
+export interface DetailPhaseResult {
+    items: ExolytVideoDetail[]
+    aborted: boolean
+    reason?: unknown
+}
+
+// detail 段单独触发口（链路B 浮窗「采详情」按钮 / 链路A collectExolyt 内部次段共用）：
+// 输入待采 videoId 列表 → 就地并发池 + 连续 3 错熔断 并发调 fetchDetail → 双门过滤（时长/图文）
+// 终点 = 过门 detail + 中止信号（不入队，入队归调用方）。不依赖 searchPhase，可单独调。
+export async function detailPhase(
+    videoIds: string[],
+    rt: CsRuntime,
+    deps: ExolytCollectDeps = {},
+    concurrencyParam?: number
+): Promise<DetailPhaseResult> {
     const fetchDetail = deps.fetchDetail ?? defaultFetchDetail
-    const concurrency = clampConcurrency(params.concurrency)
+    const concurrency = clampConcurrency(concurrencyParam)
     const breaker = makeCircuitBreaker(CIRCUIT_BREAKER_THRESHOLD)
 
     const gated: ExolytVideoDetail[] = []
@@ -140,9 +182,11 @@ export async function collectExolyt(
     // 主动心跳：大批 detail 并发 + 限流节流可能跨 60s 静默，每完成若干条主动 rt.log 防 isAlive 60s 误判 dead
     const HEARTBEAT_EVERY = 10
 
-    await runWithConcurrency(videoIds, async (id) => {
+    const poolResult = await runWithConcurrency(videoIds, async (id) => {
         // worker 取数前自查取消（并发池 runSlot 已在取 item 前 throwIfCancelled，此处再守 detail 取数前一刻）
         rt.throwIfCancelled()
+        // 暂停轮询：浮窗「暂停」对 detail 并发段生效（CLI 链路无此方法=不挂起），对齐 onPackVideo 既有模式
+        await rt.waitWhilePaused?.()
         try {
             const detail = await fetchDetail(id)
             // 成功返回即重置连续错计数——时长门剔除走成功路径、与熔断正交（AC4）
@@ -174,13 +218,30 @@ export async function collectExolyt(
         }
     }, concurrency, rt)
 
-    rt.log(`[exolyt] detail 采集收口：过门 ${gated.length} 条交 1.5（剔除超时长 ${dropped} 条、图文 ${imageDropped} 条）`)
-
-    // 入队这批新采 videoId（已经远程去重，均为新采）：rows 对齐 tiktok 调用方的最小字段集 {videoId}
-    if (gated.length > 0) {
-        await enqueueUpsertVideos('exolyt', gated.map(d => ({videoId: d.videoId})))
-        rt.log(`[exolyt] 已入队 ${gated.length} 条新采 videoId 待远程 upsert`)
+    if (poolResult.aborted) {
+        const reasonMsg = poolResult.reason instanceof Error ? poolResult.reason.message : String(poolResult.reason ?? '')
+        rt.log(`[exolyt] detail 采集被中止（熔断/取消）：已采 ${gated.length} 条；原因：${reasonMsg}`)
     }
 
-    return gated
+    rt.log(`[exolyt] detail 采集收口：过门 ${gated.length} 条交 1.5（剔除超时长 ${dropped} 条、图文 ${imageDropped} 条）`)
+
+    return {items: gated, aborted: poolResult.aborted, reason: poolResult.reason}
+}
+
+// 链路A 整批入口：内部依次调 searchPhase + detailPhase，返回过门 detail 列表。
+// 注意：videoId 写回远程去重表格不在此做——口径为「视频下载完成后才写」，
+// 由 node 总指挥（collect.mjs）在 mv 归位成功后逐条 call exolytMarkCollected 触发。
+export async function collectExolyt(
+    params: ExolytCollectInput,
+    rt: CsRuntime,
+    deps: ExolytCollectDeps = {}
+): Promise<ExolytVideoDetail[]> {
+    const videoIds = await searchPhase(params, rt)
+    const result = await detailPhase(videoIds, rt, deps, params.concurrency)
+    // CLI 链路恢复原失败语义：中止=任务非成功，按 reason 抛（透传带 [CODE] 的 RATE_LIMITED/取消码），
+    // 不静默吞码上报成功。CLI 不保留已采（V3 增强对 CLI 留待裁决，非本次范围）。
+    if (result.aborted) {
+        throw result.reason instanceof Error ? result.reason : new Error(String(result.reason ?? 'detail aborted'))
+    }
+    return result.items
 }

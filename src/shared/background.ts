@@ -423,6 +423,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return
     }
 
+    // 站点 CS（exolyt 浮窗）经此发起 facade dispatcher 并等单次终态回执——复用全套 ctx/四态/ephemeral 回收
+    if (request.type === 'pd:invoke') {
+        const facade = globalThis.__pd
+        if (!facade) {
+            sendResponse({ok: false, code: 'SW_DEAD', message: 'facade 未就绪'})
+            return true
+        }
+        ;(async () => {
+            try {
+                const params = (request.params && typeof request.params === 'object') ? request.params : {}
+                sendResponse(await facade.callAndWait(String(request.method || ''), params))
+            } catch (e) {
+                sendResponse({ok: false, code: 'UNKNOWN_ERROR', message: e instanceof Error ? e.message : String(e)})
+            }
+        })()
+        return true
+    }
+
     if (request.action === 'download') {
         if (typeof request.url !== 'string' || typeof request.filename !== 'string') return
         const msg = request as DownloadMessage

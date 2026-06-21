@@ -66,6 +66,8 @@ export type DispatchFn = (params: Record<string, unknown>, ctx: DispatchContext)
 
 export interface PdFacade {
     call: (method: string, params: Record<string, unknown>) => Promise<{ taskId: string; tabId: number | null }>
+    // 起任务并阻塞到终态——供站点 CS（浮窗）经 pd:invoke 复用 dispatcher，拿单次结果；CLI 仍走 call+tail 轮询
+    callAndWait: (method: string, params: Record<string, unknown>) => Promise<{ ok: boolean; result?: unknown; code?: string; message?: string }>
     tail: (taskId: string, sinceSeq: number) => Promise<TailResult>
     status: (taskId: string) => Promise<StatusSnapshot | { error: 'not_found' }>
     cancel: (taskId: string) => Promise<{ ok: boolean }>

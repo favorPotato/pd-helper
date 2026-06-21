@@ -13,6 +13,7 @@ import {
     NOX_PAUSE_AUTO_COLLECT_REMOTE,
     NOX_RESUME_AUTO_COLLECT_REMOTE,
     EXOLYT_SEARCH_COLLECT_REMOTE,
+    EXOLYT_MARK_COLLECTED_REMOTE,
     PD_RUNTIME_DISPATCH,
     PD_RUNTIME_PING,
     type PdRuntimeDispatchResponse,
@@ -218,6 +219,28 @@ const tkFetchVideo: DispatchFn = async (params, ctx) => {
     // 导航式单采：CS 从活 DOM 出 itemStruct(JSON) + 视频文件；CLI 默认连评论一并采进 JSON，comments=false 可关
     await navigateAndDispatch(ctx, `https://www.tiktok.com/@i/video/${id}`, TK_FETCH_VIDEO_REMOTE, {
         comments: boolParam(params.comments, true)
+    }, waitForTkDetailReady)
+}
+
+// 浮窗采单视频→就地组 zip：开 tiktok @i/video/{id} 静默临时 tab，把 exolytRaw 随 CS 消息下行
+// 复用 TK_FETCH_VIDEO_REMOTE 作 CS 消息类型 + 四态分流（navigateAndDispatch + waitForTkDetailReady）
+// CS 端凭 payload 带 exolytRaw+packZip 走「就地组 zip + downloadBlob」分支；视频字节不回传，本 tab 落盘
+const exolytPackVideo: DispatchFn = async (params, ctx) => {
+    const id = resolveTkVideoId(strParam(params.url), strParam(params.videoId))
+    if (!id) {
+        ctx.setTabId(null)
+        ctx.fail('INVALID_PARAM', 'videoId required')
+        return
+    }
+    if (params.exolytRaw === undefined || params.exolytRaw === null) {
+        ctx.setTabId(null)
+        ctx.fail('INVALID_PARAM', 'exolytRaw required')
+        return
+    }
+    await navigateAndDispatch(ctx, `https://www.tiktok.com/@i/video/${id}`, TK_FETCH_VIDEO_REMOTE, {
+        videoId: id,
+        exolytRaw: params.exolytRaw,
+        packZip: true
     }, waitForTkDetailReady)
 }
 
@@ -490,10 +513,23 @@ const exolytSearchCollect: DispatchFn = async (params, ctx) => {
     })
 }
 
+// 链路A 下载后写回：node 在视频 mv 归位成功后逐条 call，把 videoId 写入远程去重表格。
+// 须经 exolyt CS（其 setup 启动了同步 worker，入队即 flush 到 Sheets）；只入队，不依赖 JWT。
+const exolytMarkCollected: DispatchFn = async (params, ctx) => {
+    const videoId = strParam(params.videoId)
+    if (!videoId) {
+        ctx.setTabId(null)
+        ctx.fail('INVALID_PARAM', 'videoId required')
+        return
+    }
+    await dispatchRemoteToTab(ctx, PLATFORM_EXOLYT, EXOLYT_MARK_COLLECTED_REMOTE, {videoId})
+}
+
 const DISPATCHERS: Readonly<Record<string, DispatchFn>> = {
     tkProfileMetrics,
     tkCollect,
     tkFetchVideo,
+    exolytPackVideo,
     tkBatchCollect,
     tkDownloadVideo,
     tkBridgeToIg,
@@ -506,7 +542,8 @@ const DISPATCHERS: Readonly<Record<string, DispatchFn>> = {
     noxCollectTikTokPool,
     noxPauseAutoCollect,
     noxResumeAutoCollect,
-    exolytSearchCollect
+    exolytSearchCollect,
+    exolytMarkCollected
 }
 
 export function registerBusinessDispatchers(facade: PdFacade): void {

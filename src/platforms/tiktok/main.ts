@@ -5,7 +5,7 @@ import {parseVideoDetailFromHtml, pruneItemStruct} from './video-detail'
 import {Relay} from './relay'
 import {UiHelper, UrlHelper} from './helpers'
 import {showDialog} from '../../shared/custom-dialog'
-import {downloadBlob} from '../../shared/archive'
+import {createJsonArchiveFile, createZipBlob, downloadBlob, type ArchiveFile} from '../../shared/archive'
 import {TK_BATCH_COLLECT_FIELDS, TK_SINGLE_COLLECT_FIELDS} from '../../shared/tk-collect-fields'
 import {truncateError} from '../../shared/errors'
 
@@ -145,6 +145,49 @@ function initTikTokMessageHandler(): void {
             const withComments = msg.comments === true
             if (!taskId) {
                 sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+
+            // 浮窗采单视频→就地组 zip 分支：payload 带 exolytRaw+packZip 时，采 tk raw + 视频字节就地组 zip 落盘
+            // 视频字节几 MB，绝不走 pd:done 帧（500 字节截断），不回传浮窗；zip 内目录靠 ArchiveFile.filename 前缀
+            if (msg.packZip === true && msg.exolytRaw !== undefined && msg.exolytRaw !== null) {
+                const exolytRaw = msg.exolytRaw
+                const videoId = typeof msg.videoId === 'string' && msg.videoId ? msg.videoId : ''
+                sendResponse({ok: true, accepted: true})
+                void runFireAndForget(taskId, async (rt) => {
+                    rt.throwIfCancelled()
+                    const html = document.documentElement.outerHTML
+                    const detail = parseVideoDetailFromHtml(html)
+                    if (!detail) throw new Error('详情页未就绪（请重试）')
+                    const itemStruct = detail.itemStruct
+                    const id = videoId || String(itemStruct.id)
+                    // 评论与视频字节并行采（与非 packZip 分支同款 best-effort）——浮窗链路无条件采首页评论并入 comments，
+                    // 失败仅记日志不连累 zip 落盘；不补这步则 comments 保持 itemStruct 原生空数组
+                    const commentsJob = (async () => {
+                        try {
+                            const authorId = String((itemStruct.author as {id?: unknown})?.id ?? '')
+                            const {comments} = await fetchVideoComments(String(itemStruct.id), authorId, detail.requestEnv, window.location.href)
+                            itemStruct.comments = comments
+                            rt.log(`已采评论 ${comments.length} 条`)
+                        } catch (error) {
+                            rt.log(`评论采集失败（itemStruct 已采）: ${error instanceof Error ? error.message : String(error)}`)
+                        }
+                    })()
+                    const videoData = await Downloader.downloadTikTokVideo(html)
+                    rt.log(`视频已取字节: ${videoData.bytes.byteLength} bytes`)
+                    await commentsJob
+                    pruneItemStruct(itemStruct)
+                    rt.throwIfCancelled()
+                    const files: ArchiveFile[] = [
+                        createJsonArchiveFile(`raws/exolyt/${id}.json`, exolytRaw),
+                        createJsonArchiveFile(`raws/tiktok/${id}.json`, itemStruct),
+                        {filename: `videos/${id}.mp4`, bytes: videoData.bytes}
+                    ]
+                    const zipBlob = createZipBlob(files)
+                    await downloadBlob(`${id}.zip`, zipBlob)
+                    rt.log(`zip 已落盘: ${id}.zip (${zipBlob.size} bytes)`)
+                    return {videoId: id, zipSize: zipBlob.size}
+                })
                 return true
             }
 

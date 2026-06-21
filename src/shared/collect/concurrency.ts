@@ -20,32 +20,57 @@ export interface CancelSignal {
     throwIfCancelled(): void
 }
 
+// 池中止结果：aborted=是否因 worker 抛错（熔断/取消）提前停；reason=触发中止的错误（供上层判定）。
+// 可选返回，调用方拿到对象后只读字段；不感知 aborted 的现有调用方（解构 await 忽略返回值）照常工作。
+export interface ConcurrencyResult {
+    aborted: boolean
+    reason?: unknown
+}
+
 // 固定大小并发池：concurrency 个 worker 并发从 items 队列取任务调 worker(item)，slot 完成即取下一个直至队列空
-// 取每个 item 前 throwIfCancelled——已取消则抛 cancelled 不再起新任务（在途任务自然结束）
-// worker 抛出 → 该错冒泡终止整池（熔断中止靠 worker 内 recordErr 在阈值抛出，错冒泡到此处停池）
+// 取每个 item 前查共享中止信号——已中止则停止取新 item 自然退出（不再发请求），其余 slot 一并感知收敛
+// worker 抛出（熔断 recordErr 达阈值 / 取消）→ 置共享中止位、记 reason，不再 reject 整池：
+//   其余 slot 见中止位后自然退出，池以「已完成结果」正常 resolve，回报 aborted+reason 供上层裁决
 // 已落数据由 worker 自身累加进外部数组——本池中止不清外部已采，调用方据返回数组保留已采（AC3 ④）
 export async function runWithConcurrency<T>(
     items: readonly T[],
     worker: (item: T, index: number) => Promise<void>,
     concurrency: number,
     cancel?: CancelSignal
-): Promise<void> {
+): Promise<ConcurrencyResult> {
     const total = items.length
-    if (total === 0) return
+    if (total === 0) return {aborted: false}
 
     const width = Math.max(1, Math.min(concurrency, total))
     let next = 0
+    // 共享中止信号：任一 slot 因 worker 抛错（或外部取消）置位，其余 slot 取新 item 前感知即退出
+    let aborted = false
+    let reason: unknown
 
     async function runSlot(): Promise<void> {
         while (true) {
-            cancel?.throwIfCancelled()
+            if (aborted) return
+            try {
+                cancel?.throwIfCancelled()
+            } catch (error) {
+                aborted = true
+                reason = error
+                return
+            }
             const current = next
             if (current >= total) return
             next += 1
-            await worker(items[current], current)
+            try {
+                await worker(items[current], current)
+            } catch (error) {
+                // worker 抛出 = 熔断阈值触发或不可恢复错：置共享中止位让全池收敛，已采数据已落外部数组不丢
+                aborted = true
+                reason = error
+                return
+            }
         }
     }
 
-    // 任一 slot 抛错（取消/熔断中止）即 reject——其余在途任务结束后整体 reject，已采数据已落外部数组不丢
     await Promise.all(Array.from({length: width}, () => runSlot()))
+    return {aborted, reason}
 }

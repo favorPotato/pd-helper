@@ -5,6 +5,9 @@ export interface CsRuntime {
     log(message: string): void
     pushLog(data: Record<string, unknown>): void
     throwIfCancelled(): void
+    // 可选挂起点：暂停态时轮询等待恢复（浮窗链路实现，CLI 链路不提供=不挂起）。
+    // 与 throwIfCancelled（取消=抛错中止）正交：暂停=挂起等待，不取消已采。
+    waitWhilePaused?(): Promise<void>
 }
 
 export type CsTask<R> = (rt: CsRuntime) => Promise<R>

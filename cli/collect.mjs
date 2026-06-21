@@ -152,6 +152,17 @@ export async function cmdCollect(session, args) {
     for (const id of videoIds) {
         if (videoExists(libRoot, id)) {
             tkSkippedVideo += 1
+            // 续采漂移修复：本地视频已存在跳过下载，但远程去重表可能因首跑写回失败而缺这条，
+            // 故此处补一次写回（入队、幂等），使去重表最终一致；写回仍 best-effort，失败不阻断续采。
+            try {
+                await runCallAndCollect(session, {
+                    method: 'exolytMarkCollected',
+                    params: {videoId: id},
+                    timeoutMs, pollIntervalMs, statusIntervalMs
+                })
+            } catch (e) {
+                ttyLog(`[pd-helper-cli] 远程去重补写回失败 ${id}（已存在视频，best-effort）: ${e instanceof Error ? e.message : String(e)}`)
+            }
             continue
         }
         try {
@@ -165,8 +176,20 @@ export async function cmdCollect(session, args) {
             tkOk += 1
             // 视频下载落 downloadDir 平铺，等下完 mv 归位到 videos/（best-effort，不阻断 raw）
             const mv = await moveVideoIntoLib(downloadDir, libRoot, tid)
-            if (mv.moved) videoMoved += 1
-            else { videoMissing += 1; ttyLog(`[pd-helper-cli] 视频未落盘/超时 ${tid}（raw 已存，best-effort）`) }
+            if (mv.moved) {
+                videoMoved += 1
+                // 口径：视频下载完成后才把 videoId 写回远程去重表格（与链路B 一致）。
+                // best-effort——写回失败不丢已落视频，仅记日志（本地存在性仍可在重跑时跳过）
+                try {
+                    await runCallAndCollect(session, {
+                        method: 'exolytMarkCollected',
+                        params: {videoId: tid},
+                        timeoutMs, pollIntervalMs, statusIntervalMs
+                    })
+                } catch (e) {
+                    ttyLog(`[pd-helper-cli] 远程去重写回失败 ${tid}（视频已落，best-effort）: ${e instanceof Error ? e.message : String(e)}`)
+                }
+            } else { videoMissing += 1; ttyLog(`[pd-helper-cli] 视频未落盘/超时 ${tid}（raw 已存，best-effort）`) }
         } catch (e) {
             const code = e instanceof CdpError ? e.code : 'UNKNOWN_ERROR'
             uncollectable.push({videoId: id, code, message: e instanceof Error ? e.message : String(e)})

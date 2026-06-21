@@ -83,7 +83,16 @@ function coerceNumber(raw: unknown): unknown {
 // 组装 body：缺失才填默认、入口给值不被覆盖；page 固定 1；hashtag 经 or:[{type:'hashtag',id}] 承载（后端真实契约）
 // page 取舍：实测 search.js body 含 page:1，epics「9 字段全集」未列 page；本 story 固定单页、不递增（AC4/AC6），不实现翻页
 export function buildSearchBody(input: ExolytRawSearchInput): ExolytSearchBody {
-    const has = (k: keyof ExolytRawSearchInput): boolean => input[k] !== undefined && input[k] !== null
+    // 空串标量与空数组皆视为「未给值」回落默认：URL 解析路径会带 ?areas= / ?dateStart= 等空值，
+    // 若判为已给则空 regions:[] 静默丢 BR 业务锁、空串标量经 validate 误报 INVALID_PARAM。
+    // CLI 路径 passStr/passArr 已先剔空，永不命中此分支，故行为不变。
+    const has = (k: keyof ExolytRawSearchInput): boolean => {
+        const v = input[k]
+        if (v === undefined || v === null) return false
+        if (typeof v === 'string') return v !== ''
+        if (Array.isArray(v)) return v.length > 0
+        return true
+    }
     const day = yesterday()
 
     const regions = has('regions') ? input.regions : DEFAULT_REGIONS
