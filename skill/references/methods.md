@@ -95,6 +95,47 @@ No login required. Except for `tkBatchCollect`, all dispatch to an already-open 
 
 ---
 
+## Exolyt
+
+Searches Brazilian short videos by keyword / filters, then backfills the raw TikTok data and video files. Preconditions: an Exolyt site tab is open and logged in; the remote dedup queue (Google Sheets) is reachable.
+
+Two stages: `search` queries Exolyt and accumulates hits into the browser in-memory pool (no disk write); `detail` finalizes the pool and writes to disk. Run `search` multiple times to accumulate, then `detail` once.
+
+### search
+- Form: `node ./scripts/main.mjs exolyt search [--url <frontend-filter-URL>] [--param <field>=<value> ...] [--detail]` (not `call`)
+- Input, one of two (provide at least one):
+  - `--url`: pass an Exolyt frontend filter-page URL; its query is parsed automatically.
+  - `--param`: 9 backend filter fields; omitted ones use defaults: `sort` (default `likes_most`; whitelist `views_most|views_least|likes_most|likes_least|newest|oldest`), `likesMin` (default 1000, lower bound only), `mood` (default null = any; enum `positive|neutral|negative`), `dateStart` / `dateEnd` (default: yesterday, single day, `YYYY-MM-DD`), `regions` (default `BR`, comma-separated multi-value), `hashtags` (comma-separated multi-value, searched as OR), `followers` (default `0_100000`, `min_max` range string), `accountType` (default 0 = any, whitelist 0/1).
+- Limit: at most 200 per run, no pagination; for more, change filters and run `search` again.
+- Terminal state: one `summary` frame (phase=`search`) with `added` (newly added this run), `total` (accumulated in pool), `root`.
+- `--detail`: run `detail` automatically after the search (same output location as `detail`; needs `--root` / `--seq`).
+- Error codes: `INVALID_PARAM`, `LOGIN_REQUIRED`, `RATE_LIMITED`, `TAB_CLOSED`.
+
+### detail
+- Form: `node ./scripts/main.mjs exolyt detail [--root|--seq]` (not `call`)
+- Output location: `--root <dir>` or `--seq <number>` (mapped to `~/Downloads/<seq>`); if neither is given, env `PD_HELPER_VIDEO_ROOT` or `./video-lib`.
+- Outputs: each pooled item passes a dual-gate pre-filter on duration / photo-post; those that pass are written to `raws/exolyt/{id}.json` + `raws/tiktok/{id}.json` + video `videos/{id}.*`.
+- Terminal state: one `summary` frame (phase=`detail`) with `searched`, `exolyt` (`written` / `skipped` / `total` / `aborted`), `tk` (`ok` / `skippedExisting`), `video` (`moved` / `missing`), `uncollectable` (per-item list with code), `uncollectableCount`, `captchaAborted`, `root`.
+- Resume: re-run against the same `--root` / `--seq` after an interruption; already-saved items are skipped, filling only the gaps.
+- `exolyt.aborted=true` (circuit-breaker / rate-limit abort): the task still succeeds, what is already on disk is valid, not a failure.
+- 3 consecutive CAPTCHAs: the whole batch aborts and exits with `CAPTCHA` (exit 15); what is on disk is kept; switch IP / environment or retry later.
+- A single uncollectable item (`GONE` / `AUTH_WALL`, etc.): recorded in `uncollectable`, does not abort the batch.
+
+### categories
+- Form: `node ./scripts/main.mjs exolyt categories [<category>]` (local-only, no browser / extension needed)
+- No arg: lists all category names, one per line.
+- With a category name: outputs that category's hashtags as a comma-separated string, ready to pass to `exolyt search --param hashtags=<string>`.
+- Error codes: `INVALID_PARAM` (unknown category).
+
+### End-to-end usage
+
+1. Pick a category: `exolyt categories` lists categories; `exolyt categories <name>` gets its hashtags string.
+2. Search: `exolyt search --param hashtags=<string> [other filters]`; for more, change filters (advance the date day by day, adjust `likesMin` / `followers`) and run `search` again, accumulating into the same pool.
+3. Finalize: `exolyt detail --seq <number>`, then check `summary`; for a single filter set, `exolyt search ... --detail` does it in one go.
+4. Index: `exolyt index --seq <number>` derives `index/<YYYY-MM>.json` from `raws/`; external selection is merged in via `--select <json>`.
+
+---
+
 ## Instagram
 
 Requires login to `instagram.com` (private API, depends on sessionid / ds_user_id; missing → `LOGIN_REQUIRED`). Dispatches to an already-open `*.instagram.com` tab.

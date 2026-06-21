@@ -1,6 +1,6 @@
 ---
 name: pd-helper-cli
-description: Use to collect TikTok / Instagram / NoxInfluencer data, run collection workflows, or manage their tasks (status / logs / cancel) through the pd-helper Chrome extension's bundled CLI.
+description: Use to collect TikTok / Instagram / NoxInfluencer / Exolyt data, run collection workflows, or manage their tasks (status / logs / cancel) through the pd-helper Chrome extension's bundled CLI. Exolyt is for collecting Brazilian short videos by keyword / topic / category and similar filters.
 ---
 
 # pd-helper-cli
@@ -16,12 +16,16 @@ Run the CLI from the Skill root: `node ./scripts/main.mjs` (any node-compatible 
 ## Commands
 
 ```sh
-node ./scripts/main.mjs call <method> [--param k=v ...]   # start and follow a task to completion
-node ./scripts/main.mjs list [--all]                      # list tasks (--all includes terminal ones)
-node ./scripts/main.mjs status <taskId>                   # progress snapshot
-node ./scripts/main.mjs cancel <taskId>                   # cancel a task
-node ./scripts/main.mjs methods                           # list registered methods
-node ./scripts/main.mjs sheet <action> [--param k=v ...]  # call an Apps Script action directly
+node ./scripts/main.mjs call <method> [--param k=v ...]          # start and follow a task to completion
+node ./scripts/main.mjs list [--all]                             # list tasks (--all includes terminal ones)
+node ./scripts/main.mjs status <taskId>                          # progress snapshot
+node ./scripts/main.mjs cancel <taskId>                          # cancel a task
+node ./scripts/main.mjs methods                                  # list registered methods
+node ./scripts/main.mjs sheet <action> [--param k=v ...]         # call an Apps Script action directly
+node ./scripts/main.mjs exolyt search [--url <u>] [--param k=v] [--detail]  # search only, accumulate hits into the browser pool; --detail runs detail after
+node ./scripts/main.mjs exolyt detail [--root|--seq]             # finalize the pool: write detail + backfill tk
+node ./scripts/main.mjs exolyt categories [<category>]           # list category names; with a name, output its hashtags (for search)
+node ./scripts/main.mjs exolyt index [--root|--seq] [--select]   # derive index/<YYYY-MM>.json from collected raws/
 ```
 
 Common options: `--cdp <url>`, `--ext-id <id>` (auto-detected by default), `--timeout <seconds>` (default 3600; batch jobs may need a larger value). `--param` only coerces `true` / `false` / `null`; numbers and everything else stay strings (the SW side converts numeric fields itself).
