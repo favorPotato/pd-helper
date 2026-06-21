@@ -31,8 +31,19 @@ export function rawPath(libRoot, platform, videoId) {
     return resolve(libRoot, 'raws', platform, `${videoId}.json`)
 }
 
-export function rawExists(libRoot, platform, videoId) {
-    return existsSync(rawPath(libRoot, platform, videoId))
+// 列 raws/<platform>/ 下所有 <videoId>.json 的 videoId（去 .json 后缀）。
+// 作为 detail 续采的「node 端已落盘事实」基准——CS 据此把已落盘条目剔出待采，
+// 既不丢未落盘数据（含被幽灵 markDetailed 的）、又省掉对已落盘条目的 fetchDetail。
+// 目录不存在（首跑）返回空数组。
+export function listRawVideoIds(libRoot, platform) {
+    assertPlatform(platform)
+    const dir = join(libRoot, 'raws', platform)
+    if (!existsSync(dir)) return []
+    const ids = []
+    for (const name of readdirSync(dir)) {
+        if (name.endsWith('.json')) ids.push(name.slice(0, -5))
+    }
+    return ids
 }
 
 export function videoExists(libRoot, videoId) {

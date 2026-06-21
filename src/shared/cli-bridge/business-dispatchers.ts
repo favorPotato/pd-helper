@@ -12,7 +12,8 @@ import {
     NOX_COLLECT_TIKTOK_POOL_REMOTE,
     NOX_PAUSE_AUTO_COLLECT_REMOTE,
     NOX_RESUME_AUTO_COLLECT_REMOTE,
-    EXOLYT_SEARCH_COLLECT_REMOTE,
+    EXOLYT_SEARCH_REMOTE,
+    EXOLYT_DETAIL_REMOTE,
     EXOLYT_MARK_COLLECTED_REMOTE,
     PD_RUNTIME_DISPATCH,
     PD_RUNTIME_PING,
@@ -511,14 +512,13 @@ const noxResumeAutoCollect: DispatchFn = async (_params, ctx) => {
     await dispatchRemoteToTab(ctx, PLATFORM_NOX, NOX_RESUME_AUTO_COLLECT_REMOTE, {})
 }
 
-// 链路A：须已打开 exolyt 站点 tab 取同源 JWT，故用 dispatchRemoteToTab；严禁 dispatchRemoteToRuntime（runtime.html 无站点 session）
-// 1.3：透传完整筛选条件到 CS（rawUrl 粘前端 URL 或 9 字段 KV）；映射/默认/白名单校验落 CS 就近（search-params），非法 → [INVALID_PARAM]
-// 本 dispatcher 不做白名单校验（校验对象是 CS 组装后的 body）；仅对显然非法的入站做前置快拦——URL 与 KV 须至少给一路
-const exolytSearchCollect: DispatchFn = async (params, ctx) => {
+// search/detail 解耦——search 单段：透传筛选条件（rawUrl/9 字段 KV）到 exolyt CS。
+// 须已打开 exolyt 站点 tab 取同源 JWT，故用 dispatchRemoteToTab；严禁 dispatchRemoteToRuntime（runtime.html 无站点 session）。
+// 映射/默认/白名单校验落 CS 就近（search-params），非法 → [INVALID_PARAM]；本 dispatcher 不做白名单校验（校验对象是 CS 组装后的 body）。
+// CS 端 searchPhase → addSearched 累积进内存池，result 帧回 {added,total}。
+const exolytSearch: DispatchFn = async (params, ctx) => {
     const rawUrl = strParam(params.url) || strParam(params.rawUrl)
 
-    // 9 字段 KV 入口（CLI/条件表单）：原样收集非空字段透传 CS，由 search-params 收敛类型 + 校验（dispatcher 不预校验枚举）
-    // regions/hashtags 接收逗号分隔串或数组；likesMin/accountType 原样透传串交 CS coerce+validate（dispatcher 不吞非法值）
     const input: Record<string, unknown> = {}
     const passStr = (k: string): void => { const v = strParam(params[k]); if (v) input[k] = v }
     const passArr = (k: string): void => {
@@ -533,8 +533,6 @@ const exolytSearchCollect: DispatchFn = async (params, ctx) => {
     passStr('followers')
     passArr('regions')
     passArr('hashtags')
-    // likesMin/accountType 原样透传串（不在此 numParam 收敛）：非法非数字串若在 dispatcher 吞成 undefined 会致 CS 回落默认 = 静默回落
-    // 故交 CS buildSearchBody coerce + validate 统一拦截（与 URL 路径一致），守「禁静默回落默认」
     passStr('likesMin')
     passStr('accountType')
 
@@ -544,10 +542,14 @@ const exolytSearchCollect: DispatchFn = async (params, ctx) => {
         return
     }
 
-    await dispatchRemoteToTab(ctx, PLATFORM_EXOLYT, EXOLYT_SEARCH_COLLECT_REMOTE, {
-        rawUrl,
-        input
-    })
+    await dispatchRemoteToTab(ctx, PLATFORM_EXOLYT, EXOLYT_SEARCH_REMOTE, {rawUrl, input})
+}
+
+// search/detail 解耦——detail 单段：CS 端读内存池 searched∪detailed 态 ids，剔除 node 端已落盘集（have）后 detailPhase 逐条流式 push（kind=exolytDetail）。
+// have = node 端 raws/exolyt 已落盘 videoId[]，作续采基准（中断不丢数据 + 跳过已落盘 fetchDetail）；result 帧回 {detailed,gated,aborted,reason}。须经 exolyt 站点 tab。
+const exolytDetail: DispatchFn = async (params, ctx) => {
+    const have = Array.isArray(params.have) ? params.have.filter((v): v is string => typeof v === 'string') : []
+    await dispatchRemoteToTab(ctx, PLATFORM_EXOLYT, EXOLYT_DETAIL_REMOTE, {have})
 }
 
 // 链路A 下载后写回：node 在视频 mv 归位成功后逐条 call，把 videoId 写入远程去重表格。
@@ -579,7 +581,8 @@ const DISPATCHERS: Readonly<Record<string, DispatchFn>> = {
     noxCollectTikTokPool,
     noxPauseAutoCollect,
     noxResumeAutoCollect,
-    exolytSearchCollect,
+    exolytSearch,
+    exolytDetail,
     exolytMarkCollected
 }
 

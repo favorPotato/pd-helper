@@ -1,12 +1,12 @@
-import {cmdCollect} from './collect.mjs'
+import {cmdSearch, cmdDetail} from './collect.mjs'
 import {cmdIndex} from './index-gen.mjs'
 import {cmdCategories} from './categories.mjs'
 import {usage} from './argv.mjs'
 import {exitFor} from './codes.mjs'
 
 // exolyt 命令族分发器（与 sheet.mjs 同范式：一个命令族一个顶层模块，main 直接 import）
-// collect 需 SW/CDP attach；index/categories 纯本地派生。main 据 exolytNeedsSession 决定是否先 attach。
-const REMOTE_SUBS = new Set(['collect'])
+// search/detail 需 SW/CDP attach；index/categories 纯本地派生。main 据 exolytNeedsSession 决定是否先 attach。
+const REMOTE_SUBS = new Set(['search', 'detail'])
 
 export function exolytNeedsSession(sub) {
     return REMOTE_SUBS.has(sub)
@@ -17,8 +17,10 @@ export async function runExolytCommand(session, args) {
     const sub = args.rest[0]
     const subArgs = {...args, rest: args.rest.slice(1)}
     switch (sub) {
-        case 'collect':
-            return await cmdCollect(session, subArgs)
+        case 'search':
+            return await cmdSearch(session, subArgs)
+        case 'detail':
+            return await cmdDetail(session, subArgs)
         case 'index':
             return cmdIndex(subArgs)
         case 'categories':

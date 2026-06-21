@@ -77,8 +77,10 @@ function pushLog(taskId: string, type: FrameType, data: Record<string, unknown>)
     const t = tasks.get(taskId)
     if (!t) return
 
-    // result 帧承载完整业务结果，豁免截断（否则大 itemStruct 会被砍坏）
-    let payload = type === 'result' ? data : truncateData(data)
+    // result 帧承载完整业务结果，豁免截断（否则大 itemStruct 会被砍坏）；
+    // exolytDetail 流式 progress 帧承载完整 detail.raw（边采边落给 node），同理豁免截断
+    const exemptTruncate = type === 'result' || data.kind === 'exolytDetail'
+    let payload = exemptTruncate ? data : truncateData(data)
     let frame: LogFrame = {
         v: 1,
         type,
@@ -88,7 +90,7 @@ function pushLog(taskId: string, type: FrameType, data: Record<string, unknown>)
         data: payload
     }
 
-    if (type !== 'result' && byteLen(JSON.stringify(frame)) > FRAME_MAX_BYTES * 4) {
+    if (!exemptTruncate && byteLen(JSON.stringify(frame)) > FRAME_MAX_BYTES * 4) {
         payload = {__truncated: true, originalKeys: Object.keys(data)}
         frame = {...frame, data: payload}
     }

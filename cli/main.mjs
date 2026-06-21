@@ -24,7 +24,7 @@ async function main() {
     }
 
     // attach 前路由：sheet 及 exolyt 的本地子命令（index/categories）不经 SW/CDP
-    // —— index 读 raws/ 派生、categories 读 cli/assets；仅 exolyt collect 需 attach（见 exolytNeedsSession）
+    // —— index 读 raws/ 派生、categories 读 cli/assets；仅 exolyt search/detail 需 attach（见 exolytNeedsSession）
     if (args.cmd === 'sheet') {
         return await runSheetCommand(args)
     }

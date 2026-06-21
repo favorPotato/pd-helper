@@ -1,8 +1,8 @@
 import type {CsRuntime} from '../../shared/cli-bridge/cs-runtime'
 import {runFireAndForget, withPdCode} from '../../shared/cli-bridge/cs-runtime'
-import {EXOLYT_SEARCH_COLLECT_REMOTE, EXOLYT_MARK_COLLECTED_REMOTE} from '../../shared/remote-collect'
+import {EXOLYT_SEARCH_REMOTE, EXOLYT_DETAIL_REMOTE, EXOLYT_MARK_COLLECTED_REMOTE} from '../../shared/remote-collect'
 import {enqueueUpsertVideos, startSyncWorker} from '../../shared/sheets-sync'
-import {collectExolyt, searchPhase, detailPhase} from './collector'
+import {searchPhase, detailPhase} from './collector'
 import {showDialog} from '../../shared/custom-dialog'
 import {checkAppsScriptHealth} from '../../shared/apps-script-client'
 import {delay} from '../../shared/timing'
@@ -30,34 +30,6 @@ function initExolytMessageHandler(): void {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (!msg || typeof msg !== 'object') return
 
-        if (msg.type === EXOLYT_SEARCH_COLLECT_REMOTE) {
-            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
-            if (!taskId) {
-                sendResponse({ok: false, error: 'taskId required'})
-                return true
-            }
-
-            // ack 协议：同步 ack → return true → 进度/结果全程经 runFireAndForget 上行，绝不在 ack 回业务结果
-            sendResponse({ok: true, accepted: true})
-
-            // dispatcher 透传两路径：rawUrl（粘前端筛选 URL，优先）或 input（9 字段 KV，条件表单/CLI）
-            const rawUrl = typeof msg.rawUrl === 'string' && msg.rawUrl.length ? msg.rawUrl : undefined
-            const input = msg.input && typeof msg.input === 'object' ? msg.input as ExolytRawSearchInput : undefined
-
-            void runFireAndForget(taskId, async (rt) => {
-                rt.throwIfCancelled()
-                // 校验/组装在 collector → search-params（CS 就近），非法值已带 [INVALID_PARAM] pdCode
-                try {
-                    return await collectExolyt({rawUrl, input}, rt)
-                } catch (error) {
-                    const err = error instanceof Error ? error : new Error(String(error))
-                    // 仅在异常未带 pdCode 时兜底 UNKNOWN_ERROR——不覆盖 collector 已打的 INVALID_PARAM 等码
-                    return Promise.reject(hasPdCode(err) ? err : withPdCode(err, 'UNKNOWN_ERROR'))
-                }
-            })
-            return true
-        }
-
         // 链路A 下载后写回：node 在视频下载完成后逐条 call，把 videoId 入队远程去重表格。
         // 经此 exolyt CS（setup 已 startSyncWorker）入队即被 flush 到 Sheets。
         if (msg.type === EXOLYT_MARK_COLLECTED_REMOTE) {
@@ -76,6 +48,75 @@ function initExolytMessageHandler(): void {
                 await enqueueUpsertVideos('exolyt', [{videoId}])
                 rt.log(`[exolyt] 已入队回写 videoId ${videoId}`)
                 return {videoId}
+            })
+            return true
+        }
+
+        // search/detail 解耦——search 单段：searchPhase 得待采 ids → addSearched 累积进内存池（与浮窗 onSearch 共用）。
+        // result 帧回 {added, total}：本次新增、当前累计 searched 数；不发 detail（解耦由 node 自行编排）。
+        if (msg.type === EXOLYT_SEARCH_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            sendResponse({ok: true, accepted: true})
+
+            const rawUrl = typeof msg.rawUrl === 'string' && msg.rawUrl.length ? msg.rawUrl : undefined
+            const input = msg.input && typeof msg.input === 'object' ? msg.input as ExolytRawSearchInput : undefined
+
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                try {
+                    const videoIds = await searchPhase({rawUrl, input}, rt)
+                    const added = collectState.addSearched(videoIds)
+                    const total = collectState.listByStatus('searched').length
+                    rt.log(`[exolyt] 检索完成：本次新增 ${added.length} 条待采（去重后），当前累计 searched ${total}`)
+                    return {added: added.length, total}
+                } catch (error) {
+                    const err = error instanceof Error ? error : new Error(String(error))
+                    return Promise.reject(hasPdCode(err) ? err : withPdCode(err, 'UNKNOWN_ERROR'))
+                }
+            })
+            return true
+        }
+
+        // search/detail 解耦——detail 单段：读内存池 searched 态 ids → detailPhase 双门过滤；
+        // 每条过门 detail 逐条流式 pushLog（kind=exolytDetail，边采边落给 node）并 markDetailed；
+        // result 帧回 {detailed, gated, aborted, reason}，透传 E2-B 的整批终止信号（连续验证码/熔断）。
+        if (msg.type === EXOLYT_DETAIL_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            sendResponse({ok: true, accepted: true})
+
+            // node 端已落盘集（raws/exolyt 实际文件）——续采权威基准：剔出已落盘条目，剩余即真·待采。
+            const have = new Set(Array.isArray(msg.have) ? (msg.have as unknown[]).filter((v): v is string => typeof v === 'string') : [])
+
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                try {
+                    // 候选与浮窗共用 listDetailCandidates（searched∪detailed 剔 have），此处 have=node 已落盘集。
+                    const ids = collectState.listDetailCandidates(have)
+                    if (ids.length === 0) {
+                        rt.log('[exolyt] 无待采详情条目')
+                        return {detailed: 0, gated: 0, aborted: false}
+                    }
+                    // 真·实时「采一个存一个」：detailPhase 每产出一条过门 detail 即回调，
+                    // 当场 markDetailed + pushLog；异常中断时已回调的 detail 已落盘不丢。
+                    const result = await detailPhase(ids, rt, {}, undefined, (detail) => {
+                        collectState.markDetailed(detail.videoId, detail)
+                        rt.pushLog({kind: 'exolytDetail', detail: {videoId: detail.videoId, raw: detail.raw}})
+                    })
+                    const reasonMsg = result.reason instanceof Error ? result.reason.message : (result.reason !== undefined ? String(result.reason) : undefined)
+                    rt.log(`[exolyt] detail 段收口：过门 ${result.items.length}/${ids.length}${result.aborted ? '（整批终止：' + (reasonMsg ?? '') + '）' : ''}`)
+                    return {detailed: result.items.length, gated: result.items.length, aborted: result.aborted, reason: reasonMsg}
+                } catch (error) {
+                    const err = error instanceof Error ? error : new Error(String(error))
+                    return Promise.reject(hasPdCode(err) ? err : withPdCode(err, 'UNKNOWN_ERROR'))
+                }
             })
             return true
         }
@@ -103,10 +144,13 @@ function makeFloatRuntime(): CsRuntime {
     }
 }
 
-// 详情段主体（onSearch 勾选「自动采集详情」与 onDetail 共用）：取 searched 态 ids →
+// 详情段主体（onSearch 勾选「自动采集详情」与 onDetail 共用）：取续采候选 ids →
 // detailPhase 双门过滤 → 过门者 markDetailed、被剔者 removeItem。busy 态由调用方管理。
 async function collectDetailPhase(rt: CsRuntime): Promise<void> {
-    const ids = collectState.listByStatus('searched').map((it) => it.videoId)
+    // 候选与 CLI detail 分支共用 listDetailCandidates（searched∪detailed 剔 have）。
+    // 浮窗无 node 落盘，have=内存已具 raw 集（落盘等价物）：detailed 皆有 raw 被剔，故常态恒等于「仅 searched」，
+    // 但口径与链路A 一致、且对「detailed 却无 raw」的异常自动续采，不再各写各的。
+    const ids = collectState.listDetailCandidates(collectState.listVideoIdsWithRaw())
     if (ids.length === 0) {
         UiHelper.log('[exolyt] 无待采详情条目')
         return

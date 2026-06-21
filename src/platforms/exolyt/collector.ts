@@ -89,7 +89,7 @@ function buildSearchDurationMap(raw: unknown): Map<string, number> {
     return map
 }
 
-// search 段单独触发口（链路B 浮窗「检索」按钮 / 链路A collectExolyt 内部首段共用）：
+// search 段单独触发口（链路B 浮窗「检索」按钮 / 链路A CLI search 段共用）：
 // 三入口 → 映射 → 默认 → 校验 → 组 9 字段 body → searchVideos → ≤200 videoId → 远程去重剔 + 前置时长/图文预剔
 // 终点 = 待采 videoId 列表（不发 detail、不入队）。不依赖 detailPhase，可单独调。
 export async function searchPhase(
@@ -161,14 +161,17 @@ export interface DetailPhaseResult {
     reason?: unknown
 }
 
-// detail 段单独触发口（链路B 浮窗「采详情」按钮 / 链路A collectExolyt 内部次段共用）：
+// detail 段单独触发口（链路B 浮窗「采详情」按钮 / 链路A CLI detail 段共用）：
 // 输入待采 videoId 列表 → 就地并发池 + 连续 3 错熔断 并发调 fetchDetail → 双门过滤（时长/图文）
 // 终点 = 过门 detail + 中止信号（不入队，入队归调用方）。不依赖 searchPhase，可单独调。
 export async function detailPhase(
     videoIds: string[],
     rt: CsRuntime,
     deps: ExolytCollectDeps = {},
-    concurrencyParam?: number
+    concurrencyParam?: number,
+    // 可选逐条回调：每产出一条过门 detail 即触发，供调用方「采一个存一个」实时落盘。
+    // 不传则行为零变化；不参与双门/熔断/aborted，仅在 push 进 gated 同处多触发一下。
+    onItem?: (detail: ExolytVideoDetail) => void
 ): Promise<DetailPhaseResult> {
     const fetchDetail = deps.fetchDetail ?? defaultFetchDetail
     const concurrency = clampConcurrency(concurrencyParam)
@@ -205,6 +208,7 @@ export async function detailPhase(
                 imageDropped += 1
             } else {
                 gated.push(detail)
+                onItem?.(detail)
             }
         } catch (error) {
             // 仅 fetchDetail 抛错才算「错」参与连续计数；达阈值 recordErr 抛出（透传带 [CODE] 原 error，熔断不新增码）
@@ -228,20 +232,3 @@ export async function detailPhase(
     return {items: gated, aborted: poolResult.aborted, reason: poolResult.reason}
 }
 
-// 链路A 整批入口：内部依次调 searchPhase + detailPhase，返回过门 detail 列表。
-// 注意：videoId 写回远程去重表格不在此做——口径为「视频下载完成后才写」，
-// 由 node 总指挥（collect.mjs）在 mv 归位成功后逐条 call exolytMarkCollected 触发。
-export async function collectExolyt(
-    params: ExolytCollectInput,
-    rt: CsRuntime,
-    deps: ExolytCollectDeps = {}
-): Promise<ExolytVideoDetail[]> {
-    const videoIds = await searchPhase(params, rt)
-    const result = await detailPhase(videoIds, rt, deps, params.concurrency)
-    // CLI 链路恢复原失败语义：中止=任务非成功，按 reason 抛（透传带 [CODE] 的 RATE_LIMITED/取消码），
-    // 不静默吞码上报成功。CLI 不保留已采（V3 增强对 CLI 留待裁决，非本次范围）。
-    if (result.aborted) {
-        throw result.reason instanceof Error ? result.reason : new Error(String(result.reason ?? 'detail aborted'))
-    }
-    return result.items
-}

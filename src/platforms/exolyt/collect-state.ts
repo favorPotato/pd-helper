@@ -68,6 +68,29 @@ export function listRetryQueue(): ExolytCollectItem[] {
     return listByStatus('failed')
 }
 
+// detail 续采候选（两链路唯一口径）：基集 searched∪detailed，剔除 have 后即真·待采。
+// 纳入 detailed 是因 detail 被中断后续跑会把 searched 幽灵 markDetailed，仅取 searched 会漏掉这些条目。
+// have = 已确认完成集，由调用方按各自落盘语义给：CLI 传 node 已落盘集（raws/exolyt 实际文件），
+// 浮窗无磁盘、raw 直存内存，传「已具 exolytRaw 集」（其落盘等价物）。两边经此函数同口径，不再各写各的。
+export function listDetailCandidates(have: Set<string>): string[] {
+    const candidates: string[] = []
+    for (const it of items.values()) {
+        if (it.status !== 'searched' && it.status !== 'detailed') continue
+        if (have.has(it.videoId)) continue
+        candidates.push(it.videoId)
+    }
+    return candidates
+}
+
+// 浮窗「已具 raw」集——浮窗侧 listDetailCandidates 的 have：raw 直存内存，有 raw 即已采完。
+export function listVideoIdsWithRaw(): Set<string> {
+    const ids = new Set<string>()
+    for (const it of items.values()) {
+        if (it.exolytRaw !== undefined) ids.add(it.videoId)
+    }
+    return ids
+}
+
 export interface ExolytStateCounts {
     searched: number
     detailed: number
