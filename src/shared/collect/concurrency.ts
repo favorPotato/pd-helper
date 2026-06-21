@@ -1,6 +1,5 @@
-// 就地并发基建（1.4）：固定大小并发池 + 连续错熔断闭包，纯逻辑无 SW 依赖
-// 1.7 才整体上移 src/shared/collect/{concurrency,circuit-breaker}.ts——本 story 绝不提前建 shared/collect/*
-// 签名刻意贴合架构决策点 4 的 shared 接口（runWithConcurrency(items,worker,concurrency) / makeCircuitBreaker(maxConsecutive)），便 1.7 行为等价平移
+// 固定大小并发池 + 并发数夹紧（Story 1.7 自 exolyt concurrency.ts 平移上移，行为等价）
+// 本模块为 exolyt 专用并发池——nox 博主采集为顺序翻页、不用本模块（FR-15）
 
 // SM-C1 反风控：默认并发保守留余量、触发 exolyt 限流/封号比慢更糟，勿为提速调高
 export const DEFAULT_CONCURRENCY = 5
@@ -15,35 +14,6 @@ export function clampConcurrency(value: number | undefined): number {
     if (floored < 1) return DEFAULT_CONCURRENCY
     if (floored > MAX_CONCURRENCY) return MAX_CONCURRENCY
     return floored
-}
-
-export interface CircuitBreaker {
-    recordOk(): void
-    // 记一次错并递增连续计数；达 maxConsecutive 抛出「触发原因错误」中止——透传原 error（已带 [CODE]），熔断本身不新增码
-    recordErr(error: unknown): void
-    consecutive(): number
-}
-
-// 连续错熔断（参考 nox paginator 的 consecutiveErrors>=3 模式，就地另写不碰 nox / FR-15）
-// 连续语义：中间任一 recordOk 即重置；非累计
-export function makeCircuitBreaker(maxConsecutive: number): CircuitBreaker {
-    let consecutive = 0
-    return {
-        recordOk() {
-            consecutive = 0
-        },
-        recordErr(error: unknown) {
-            consecutive += 1
-            if (consecutive >= maxConsecutive) {
-                // 保留 1.2 已归一的码（末次错的 [CODE]/pdCode）：限流→RATE_LIMITED、会话失效→LOGIN_REQUIRED、余者保留原码
-                // 直接 throw 原 error 而非重包装——避免裸 throw 丢码退化 UNKNOWN_ERROR（决策点 8）
-                throw error
-            }
-        },
-        consecutive() {
-            return consecutive
-        }
-    }
 }
 
 export interface CancelSignal {
