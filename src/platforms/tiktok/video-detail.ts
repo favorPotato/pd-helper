@@ -1,18 +1,26 @@
 import {asObject, buildRequestEnvFromAppContext, extractScriptContentById} from './collector'
+import {detectTkCaptchaWall} from './captcha-detect'
 import type {RequestEnv} from './client'
 import {withPdCode} from '../../shared/cli-bridge/cs-runtime'
 
 const VIDEO_DETAIL_SCOPE = 'webapp.video-detail'
 const APP_CONTEXT_SCOPE = 'webapp.app-context'
 
-// 详情页四态：READY 正常 / GONE 已删除·不存在·审核中（statusCode=10204，终态）/
-// AUTH_WALL 登录墙（公共接口不可取，终态）/ PENDING 风控·please-wait 过渡（唯一可 reload 重试）
-export type VideoDetailState = 'READY' | 'GONE' | 'AUTH_WALL' | 'PENDING'
+// 详情页五态：READY 正常 / GONE 已删除·不存在·审核中（statusCode=10204，终态）/
+// AUTH_WALL 登录墙（公共接口不可取，终态）/ CAPTCHA 人机验证墙（清 cookie 重试）/
+// PENDING 风控·please-wait 过渡（可 reload 重试）
+export type VideoDetailState = 'READY' | 'GONE' | 'AUTH_WALL' | 'CAPTCHA' | 'PENDING'
 
 // TikTok「视频不存在/受限/审核中」状态码
 const GONE_STATUS_CODE = 10204
 
+export function detectTkCaptchaHtml(html: string): boolean {
+    return detectTkCaptchaWall(html)
+}
+
 // detail 为页面 __DEFAULT_SCOPE__['webapp.video-detail'] 节点；判别序：PENDING→GONE→AUTH_WALL→READY。
+// JSON 优先：能解析出 itemStruct 即 READY（即使页面同时有验证码元素也算成功，不在此识别 CAPTCHA）。
+// CAPTCHA 升级仅在 PENDING 且 HTML 文本命中正则时发生，见 parseVideoDetailFromHtml / tkDetailReadyProbe。
 // 此函数与 business-dispatchers.ts 的注入探针 tkDetailReadyProbe 同构，改判据两处必须同步。
 export function classifyVideoDetail(detail: Record<string, unknown> | null | undefined): VideoDetailState {
     if (!detail) return 'PENDING'
@@ -43,6 +51,15 @@ export class LoginRequiredError extends Error {
         super(message)
         this.name = 'LoginRequiredError'
         withPdCode(this, 'LOGIN_REQUIRED')
+    }
+}
+
+// 单条清 cookie 重试后仍验证码 → 抛此错（带 [CAPTCHA] 前缀，映射 cli/codes.mjs 的 CAPTCHA 码 / exit 15）
+export class CaptchaError extends Error {
+    constructor(message: string) {
+        super(`[CAPTCHA] ${message}`)
+        this.name = 'CaptchaError'
+        withPdCode(this, 'CAPTCHA')
     }
 }
 
@@ -79,7 +96,11 @@ export function parseVideoDetailFromHtml(html: string): {itemStruct: Record<stri
             throw new VideoDeletedError('视频已删除或不存在（statusCode=10204）')
         case 'AUTH_WALL':
             throw new LoginRequiredError('该视频需登录态才能查看，公共接口不可取')
+        case 'CAPTCHA':
+            throw new CaptchaError('详情页命中 TikTok 人机验证')
         case 'PENDING':
+            // JSON 未出 itemStruct 且 HTML 命中验证码 → CAPTCHA；否则保持 PENDING 兜底（返回 null 让调用方重试）
+            if (detectTkCaptchaHtml(html)) throw new CaptchaError('详情页命中 TikTok 人机验证')
             return null
         case 'READY': {
             // itemStruct 由 classifyVideoDetail 的 READY 判据保证非空

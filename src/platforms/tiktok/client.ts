@@ -1,3 +1,5 @@
+import {detectTkCaptchaWall} from './captcha-detect'
+
 export interface BinaryResponse {
     bytes: ArrayBuffer
     contentType: string
@@ -108,7 +110,7 @@ function parseJsonText<T>(text: string, contentType: string): T {
 }
 
 function detectTkCaptchaText(text: string): boolean {
-    return /captcha-verify-container|captcha-verify-container-main-page|captcha_verify|secsdk-captcha|secsdk-captcha-drag-icon|Drag the puzzle piece into place|TUXModal/i.test(text)
+    return detectTkCaptchaWall(text)
 }
 
 function registerPageFetchHandler(): void {

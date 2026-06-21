@@ -205,6 +205,10 @@ async function onPackVideo(): Promise<void> {
         let okCount = 0
         let failCount = 0
         let removedCount = 0
+        // 连续验证码计数（作用域=本次出包队列）：仅「成功」清零、仅「CAPTCHA」累加；
+        // VIDEO_DELETED/LOGIN_REQUIRED/其他错误中性（不加不清）——连续 3 次验证码判定环境被风控、整批终止。
+        let captchaStreak = 0
+        let captchaAborted = false
         for (const item of queue) {
             // 暂停=挂起等待（不再开新单条、保 busy 态），点「继续」恢复；关闭浮窗即止（CS 随之销毁）。
             // 非硬中断已发出的单条，故停在「当前条目前」。
@@ -227,18 +231,30 @@ async function onPackVideo(): Promise<void> {
                     collectState.markZipped(id)
                     await enqueueUpsertVideos('exolyt', [{videoId: id}])
                     okCount += 1
+                    captchaStreak = 0  // 成功=环境活着，清零
                 } else if (res?.code === 'VIDEO_DELETED' || res?.code === 'LOGIN_REQUIRED') {
                     collectState.removeItem(id)
                     removedCount += 1
+                    // 中性：不动计数
                 } else {
                     collectState.markFailed(id, res?.message ?? '未知错误')
                     failCount += 1
+                    // 连续验证码判定：仅 CAPTCHA 累加；其他错误中性（不动计数），当条已 markFailed 进重试队列。
+                    if (res?.code === 'CAPTCHA') {
+                        captchaStreak += 1
+                        if (captchaStreak >= 3) { captchaAborted = true; break }
+                    }
                 }
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error)
                 collectState.markFailed(id, message)
                 failCount += 1
+                // sendMessage 抛异常=端口/SW 不可达，非业务码，按其他错误中性处理（不动计数）
             }
+        }
+        if (captchaAborted) {
+            // 整批终止：已出包 zip 保留、未处理条目留在队列；正常解除 busy（复用现有 finally）
+            UiHelper.log('[exolyt] 连续验证码，疑似环境被风控，请换 IP 或稍后重试；已出包条目保留、未处理条目留在队列')
         }
         UiHelper.log(`[exolyt] 采视频收口：成功 ${okCount}、失败 ${failCount}、终态剔除 ${removedCount}`)
     } catch (error) {

@@ -264,32 +264,38 @@ function resolveTkVideoId(url: string, videoId: string): string | null {
     return m ? m[1] : null
 }
 
-// 详情页四态：READY 正常 / GONE 已删除·不存在·审核中（终态）/ AUTH_WALL 登录墙（终态）/ PENDING 风控·过渡（可重试）
-type TkDetailState = 'READY' | 'GONE' | 'AUTH_WALL' | 'PENDING'
+// 详情页五态：READY 正常 / GONE 已删除·不存在·审核中（终态）/ AUTH_WALL 登录墙（终态）/
+// CAPTCHA 人机验证墙（清 cookie 重试）/ PENDING 风控·过渡（可 reload 重试）
+type TkDetailState = 'READY' | 'GONE' | 'AUTH_WALL' | 'CAPTCHA' | 'PENDING'
 
-// 在目标 tab 内探测 TikTok 详情页态。判别序 PENDING→GONE→AUTH_WALL→READY。
-// 与 video-detail.ts 的 classifyVideoDetail 同构，但 executeScript 注入页面上下文无法 import，改判据两处必须同步
+// 在目标 tab 内探测 TikTok 详情页态。判别序 PENDING→GONE→AUTH_WALL→READY，PENDING 命中验证码正则升级为 CAPTCHA。
+// 与 video-detail.ts 的 classifyVideoDetail 同构，但 executeScript 注入页面上下文无法 import，改判据须同步。
+// captchaRe 是验证码权威份（tiktok/captcha-detect.ts:TK_CAPTCHA_RE）的内联副本：改正则须同步「权威份 + 此处」两处。
 function tkDetailReadyProbe(): TkDetailState {
+    // JSON 优先：能解析出 itemStruct 即 READY（即使页面同时有验证码元素也算成功）；
+    // 仅 JSON 未就绪（PENDING）时才看 HTML 是否命中验证码，命中则升级 CAPTCHA，否则保持 PENDING 兜底
+    const captchaRe = /captcha-verify-container|captcha-verify-container-main-page|captcha_verify|secsdk-captcha|secsdk-captcha-drag-icon|Drag the puzzle piece into place|TUXModal/i
+    const pendingOrCaptcha = (): TkDetailState => (captchaRe.test(document.documentElement.outerHTML) ? 'CAPTCHA' : 'PENDING')
     const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__') || document.getElementById('__UNIVERSAL_DATA_FOR_VAR__')
     const text = el && el.textContent
-    if (!text) return 'PENDING'
+    if (!text) return pendingOrCaptcha()
     try {
         const scope = (JSON.parse(text) || {}).__DEFAULT_SCOPE__ || {}
         const detail = scope['webapp.video-detail']
-        if (!detail) return 'PENDING'
+        if (!detail) return pendingOrCaptcha()
         const code = Number(detail.statusCode)
         if (code === 10204) return 'GONE'
-        if (code !== 0) return 'PENDING'
+        if (code !== 0) return pendingOrCaptcha()
         const itemStruct = detail.itemInfo && detail.itemInfo.itemStruct
         const id = itemStruct && itemStruct.id
-        if (typeof id !== 'string' || !id) return 'PENDING'
+        if (typeof id !== 'string' || !id) return pendingOrCaptcha()
         const video = itemStruct.video || {}
         const hasPlayAddr = typeof video.playAddr === 'string' && video.playAddr.length > 0
         const hasBitrate = Array.isArray(video.bitrateInfo) && video.bitrateInfo.length > 0
         if (!hasPlayAddr && !hasBitrate) return 'AUTH_WALL'
         return 'READY'
     } catch {
-        return 'PENDING'
+        return pendingOrCaptcha()
     }
 }
 
@@ -299,7 +305,7 @@ async function waitForTkDetailReady(tabId: number): Promise<TkDetailState> {
         try {
             const r = await chrome.scripting.executeScript({target: {tabId}, func: tkDetailReadyProbe})
             const state = r?.[0]?.result
-            return state === 'READY' || state === 'GONE' || state === 'AUTH_WALL' ? state : 'PENDING'
+            return state === 'READY' || state === 'GONE' || state === 'AUTH_WALL' || state === 'CAPTCHA' ? state : 'PENDING'
         } catch {
             return 'PENDING' // 导航中/不可达，下一轮再探
         }
@@ -339,39 +345,70 @@ async function navigateAndDispatch(
     }
 
     ctx.markPhase('navigating_tab')
-    let tabId: number
-    try {
-        const tab = await chrome.tabs.create({url: detailUrl, active: false})
-        if (!tab.id) throw new Error('tab missing id')
-        tabId = tab.id
-    } catch (e) {
-        ctx.setTabId(null)
-        ctx.fail('TAB_CLOSED', `open tab failed: ${e instanceof Error ? e.message : String(e)}`)
-        return
-    }
-    ctx.setTabId(tabId)
 
-    if (!await waitForTabComplete(tabId, 20000)) {
-        void chrome.tabs.remove(tabId).catch(() => undefined)
-        ctx.fail('TAB_CLOSED', 'timeout_waiting_for_tab_complete')
-        return
-    }
+    // 开 tab 导航到 detailUrl 并探测就绪态；失败处置内部完成（关 tab + ctx.fail）→ 返回 null
+    // 返回 number=就绪 tabId；'CAPTCHA'=命中验证码（tab 已被 reset_tk_tab 关，cookie 已清，供单条重试）；null=已终态处置
+    const openAndProbe = async (): Promise<number | 'CAPTCHA' | null> => {
+        let openedTabId: number
+        try {
+            const tab = await chrome.tabs.create({url: detailUrl, active: false})
+            if (!tab.id) throw new Error('tab missing id')
+            openedTabId = tab.id
+        } catch (e) {
+            ctx.setTabId(null)
+            ctx.fail('TAB_CLOSED', `open tab failed: ${e instanceof Error ? e.message : String(e)}`)
+            return null
+        }
+        ctx.setTabId(openedTabId)
 
-    // 等页面真就绪（穿过 please-wait/空壳）再派发；按四态分流，仅 READY 继续
-    if (waitReady) {
-        const state = await waitReady(tabId)
-        if (state !== 'READY') {
-            void chrome.tabs.remove(tabId).catch(() => undefined)
-            if (state === 'GONE') {
-                ctx.fail('VIDEO_DELETED', '视频已删除或不存在（statusCode=10204）')
-            } else if (state === 'AUTH_WALL') {
-                ctx.fail('LOGIN_REQUIRED', '该视频需登录态才能查看，公共接口不可取')
-            } else {
-                ctx.fail('UNKNOWN_ERROR', '详情页未就绪（please-wait/风控空壳，重试后仍未拿到数据）')
+        if (!await waitForTabComplete(openedTabId, 20000)) {
+            void chrome.tabs.remove(openedTabId).catch(() => undefined)
+            ctx.fail('TAB_CLOSED', 'timeout_waiting_for_tab_complete')
+            return null
+        }
+
+        // 等页面真就绪（穿过 please-wait/空壳）再派发；按五态分流，仅 READY 继续
+        if (waitReady) {
+            const state = await waitReady(openedTabId)
+            if (state === 'CAPTCHA') {
+                // 清 tiktok.com cookie 并关本 tab（reset_tk_tab 一步到位）；供单条重新导航重试
+                ctx.markPhase('captcha_reset_cookie')
+                const reset = await chrome.runtime.sendMessage({type: 'reset_tk_tab', tabId: openedTabId}) as {ok?: boolean; error?: string} | undefined
+                if (!reset?.ok) {
+                    // 清 cookie 失败：tab 可能未关，兜底关一次再终态
+                    void chrome.tabs.remove(openedTabId).catch(() => undefined)
+                    ctx.fail('CAPTCHA', `[CAPTCHA] 命中 TikTok 人机验证，清 cookie 失败：${reset?.error || 'reset_tk_tab 无响应'}`)
+                    return null
+                }
+                return 'CAPTCHA'
             }
+            if (state !== 'READY') {
+                void chrome.tabs.remove(openedTabId).catch(() => undefined)
+                if (state === 'GONE') {
+                    ctx.fail('VIDEO_DELETED', '视频已删除或不存在（statusCode=10204）')
+                } else if (state === 'AUTH_WALL') {
+                    ctx.fail('LOGIN_REQUIRED', '该视频需登录态才能查看，公共接口不可取')
+                } else {
+                    ctx.fail('UNKNOWN_ERROR', '详情页未就绪（please-wait/风控空壳，重试后仍未拿到数据）')
+                }
+                return null
+            }
+        }
+        return openedTabId
+    }
+
+    // 单条 CAPTCHA 补救：清 cookie 后重导航一次；仍验证码 → 抛 CAPTCHA（exit 15）。
+    // 不做跨条计数/整批终止——那由调用方（collect.mjs / 浮窗 main.ts）负责。
+    let first = await openAndProbe()
+    if (first === 'CAPTCHA') {
+        first = await openAndProbe()
+        if (first === 'CAPTCHA') {
+            ctx.fail('CAPTCHA', '[CAPTCHA] 清 cookie 重试后仍命中 TikTok 人机验证')
             return
         }
     }
+    if (first === null) return // 终态已在 openAndProbe 内处置
+    const tabId = first
 
     // CS 由 manifest 在 tiktok.com 自动注入；tab 已 complete，少量重试即可覆盖注入竞态
     ctx.markPhase('messaging_cs')

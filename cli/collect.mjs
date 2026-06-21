@@ -149,6 +149,10 @@ export async function cmdCollect(session, args) {
     let videoMoved = 0
     let videoMissing = 0
     const uncollectable = []  // 采不动清单：GONE/AUTH_WALL/失败逐条记录，不中断整批
+    // 连续验证码计数（作用域=本次采集）：仅「成功」清零、仅「CAPTCHA」累加；
+    // GONE/登录墙/其他错误中性（不加不清）——连续 3 次验证码判定环境被风控、整批终止。
+    let captchaStreak = 0
+    let captchaAborted = false
     for (const id of videoIds) {
         if (videoExists(libRoot, id)) {
             tkSkippedVideo += 1
@@ -163,6 +167,7 @@ export async function cmdCollect(session, args) {
             } catch (e) {
                 ttyLog(`[pd-helper-cli] 远程去重补写回失败 ${id}（已存在视频，best-effort）: ${e instanceof Error ? e.message : String(e)}`)
             }
+            captchaStreak = 0  // 已存在=本地成功命中，证明前序环境活着，清零
             continue
         }
         try {
@@ -174,6 +179,7 @@ export async function cmdCollect(session, args) {
             const tid = tkVideoId(itemStruct) || id
             writeRawJson(libRoot, 'tiktok', tid, itemStruct)
             tkOk += 1
+            captchaStreak = 0  // 成功=环境活着，清零
             // 视频下载落 downloadDir 平铺，等下完 mv 归位到 videos/（best-effort，不阻断 raw）
             const mv = await moveVideoIntoLib(downloadDir, libRoot, tid)
             if (mv.moved) {
@@ -194,7 +200,22 @@ export async function cmdCollect(session, args) {
             const code = e instanceof CdpError ? e.code : 'UNKNOWN_ERROR'
             uncollectable.push({videoId: id, code, message: e instanceof Error ? e.message : String(e)})
             ttyLog(`[pd-helper-cli] tk 采不动 ${id}: [${code}] ${e instanceof Error ? e.message : String(e)}`)
+            // 连续验证码判定：仅 CAPTCHA 累加；GONE/登录墙/其他错误中性（不动计数），当条已记 uncollectable 继续下一条。
+            if (code === 'CAPTCHA') {
+                captchaStreak += 1
+                if (captchaStreak >= 3) {
+                    captchaAborted = true
+                    ttyLog('[pd-helper-cli] 连续 3 次验证码，疑似环境被风控，整批终止；已落散文件全部保留')
+                    break
+                }
+            }
         }
+    }
+    if (captchaAborted) {
+        emitSynthetic('', 'error', {
+            phase: 'tk', code: 'CAPTCHA',
+            message: '连续 3 次验证码，疑似环境被风控，整批中止；请换 IP / 换环境或稍后重试。已落散文件全部保留'
+        })
     }
 
     // ── 接缝⑦ summary ──
@@ -207,8 +228,11 @@ export async function cmdCollect(session, args) {
             video: {moved: videoMoved, missing: videoMissing},
             uncollectable,
             uncollectableCount: uncollectable.length,
+            captchaAborted,
             root: libRoot
         }
     })
+    // 因连续验证码中止：以 CAPTCHA 码退出，提示操作者换 IP / 换环境 / 稍后重试
+    if (captchaAborted) return exitFor('CAPTCHA')
     return 0
 }

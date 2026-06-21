@@ -18,6 +18,7 @@ import type {CommentPageResponse, RequestEnv} from './client'
 import {fetchCommentPage, fetchVideoPage, fetchHtml} from './client'
 import type {TikTokComment, TikTokCommentSummary, TikTokProfileCollection, TikTokUser, TikTokVideo} from './types'
 import {UrlHelper} from './helpers'
+import {detectTkCaptchaWall} from './captcha-detect'
 
 type AnyObject = Record<string, unknown>
 
@@ -423,7 +424,7 @@ export class TkCaptchaError extends Error {
 }
 
 function detectTkCaptcha(html: string): boolean {
-    return /captcha-verify-container|captcha-verify-container-main-page|captcha_verify|secsdk-captcha|secsdk-captcha-drag-icon|Drag the puzzle piece into place|TUXModal/i.test(html)
+    return detectTkCaptchaWall(html)
 }
 
 async function loadProfileContext(username: string): Promise<{

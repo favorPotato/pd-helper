@@ -16,9 +16,6 @@ export interface ExolytCollectItem {
 // 条目列表：videoId → 条目；用 Map 保插入序，便于浮窗按检索顺序逐条推进
 const items = new Map<string, ExolytCollectItem>()
 
-// 跨次检索去重：本会话已纳入列表的 videoId 全集，避免改筛选重检索时重复入列
-const seenVideoIds = new Set<string>()
-
 // 暂停标志：采集轮询每条前自查，true 时停在当前条目前（不中断已在途的单条）
 let paused = false
 
@@ -36,19 +33,15 @@ export function resume(): void {
     paused = false
 }
 
-// ---- 检索去重 ----
+// ---- 检索入列 ----
 
-export function hasSeen(videoId: string): boolean {
-    return seenVideoIds.has(videoId)
-}
-
-// 本次检索得到的 videoId 批量入列：跳过已见者，新条目以 searched 态落入并标记已见。
-// 返回真正新增的条目（供浮窗日志报「本次新增 N」）。
+// 本次检索得到的 videoId 批量入列：已在列表者跳过（同会话列表去重，以 items 为准），
+// 新条目以 searched 态落入。返回真正新增的条目（供浮窗日志报「本次新增 N」）。
+// 业务「采过不采」由远程去重表负责，本端不留冗余去重，故 removeItem 摘除者可重新入列。
 export function addSearched(videoIds: string[]): ExolytCollectItem[] {
     const added: ExolytCollectItem[] = []
     for (const videoId of videoIds) {
-        if (seenVideoIds.has(videoId)) continue
-        seenVideoIds.add(videoId)
+        if (items.has(videoId)) continue
         const item: ExolytCollectItem = {videoId, status: 'searched'}
         items.set(videoId, item)
         added.push(item)
@@ -123,8 +116,7 @@ export function markFailed(videoId: string, lastError: string): ExolytCollectIte
 
 // ---- 删 ----
 
-// 移出列表：GONE/AUTH_WALL 终态跳过时摘除条目。
-// 保留 seenVideoIds 记录，避免同会话重检索把已判终态者重新拉回列表。
+// 移出列表：GONE/AUTH_WALL 终态跳过时摘除条目。摘除后该 id 可被重检索重新入列（去重以远程为准）。
 export function removeItem(videoId: string): boolean {
     return items.delete(videoId)
 }
@@ -132,6 +124,5 @@ export function removeItem(videoId: string): boolean {
 // 整体清空：浮窗关闭/会话结束时丢弃全部内存态
 export function clearAll(): void {
     items.clear()
-    seenVideoIds.clear()
     paused = false
 }
