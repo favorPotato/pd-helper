@@ -1,5 +1,5 @@
 import {parseArgs, usage} from './argv.mjs'
-import {cmdMethods, cmdList, cmdStatus, cmdCancel, cmdDevReload} from './commands.mjs'
+import {cmdMethods, cmdList, cmdStatus, cmdCancel, cmdDevReload, cmdCollect} from './commands.mjs'
 import {attachToServiceWorker} from './attach.mjs'
 import {CdpError} from './transport.mjs'
 import {exitFor} from './codes.mjs'
@@ -55,6 +55,8 @@ async function main() {
                 return await cmdCancel(session, args)
             case 'dev-reload':
                 return await cmdDevReload(session, cdpUrl)
+            case 'collect':
+                return await cmdCollect(session, args)
             case 'call': {
                 const method = args.rest[0]
                 if (!method) {

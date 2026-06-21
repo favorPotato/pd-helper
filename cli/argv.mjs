@@ -62,12 +62,14 @@ Commands:
   cancel <taskId>                     Cancel a task
   methods                             List available methods
   sheet <action> [--param k=v ...]    Call an Apps Script / Google Sheets action directly (HTTP, no browser); complex payloads via --payload '<json>'
+  collect [--url <u>] [--param k=v]   Two-phase collect: exolyt search→detail, then serial tk fetch; raws+videos to --root
   dev-reload                          Reload the extension SW and refresh matching tabs (dev only)
 
 Global options:
   --cdp <url>             CDP HTTP endpoint (default: env PD_HELPER_CDP or http://127.0.0.1:9222)
   --ext-id <id>           pd-helper extension id (default: env PD_HELPER_EXT_ID; auto-detect via chrome://extensions/)
-  --timeout <seconds>     Total timeout for "call" (default: 3600)
+  --root <dir>            Video library root for "collect" (default: env PD_HELPER_VIDEO_ROOT or ./video-lib)
+  --timeout <seconds>     Total timeout for "call"/"collect" per task (default: 3600)
   --poll-interval <ms>    Tail poll interval (default: 2000)
   --status-interval <ms>  Status snapshot interval (default: 30000)
 
@@ -76,5 +78,7 @@ Examples:
   pd-helper-cli methods
   pd-helper-cli sheet loadInfluencersByStatus --param platform=tiktok --param status=unused
   pd-helper-cli sheet upsertNoxPage --payload '{"url":"https://...","pageNum":3}'
+  pd-helper-cli collect --param sort=likes_most --param likesMin=10000 --root ./video-lib
+  pd-helper-cli collect --url 'https://exolyt.com/...' --root ./video-lib
 `
 }

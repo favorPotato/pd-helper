@@ -4,6 +4,9 @@ import {listPageTargets} from './attach.mjs'
 import {ttyLog} from './io.mjs'
 import {exitFor} from './codes.mjs'
 
+// 两段式采集编排（exolyt 检索→detail 落盘，再串行 tk 单采）—— 实现在 collect.mjs，此处 re-export 统一命令入口
+export {cmdCollect} from './collect.mjs'
+
 const PLATFORM_HOST_RE = /(?:tiktok|instagram|noxinfluencer)\.com/i
 
 export async function cmdMethods(session) {
