@@ -34,6 +34,7 @@ Common options: `--cdp <url>`, `--ext-id <id>` (auto-detected by default), `--ti
 
 - `call` writes strict NDJSON to stdout (one JSON object per line); stderr is human-only, do not parse it.
 - Determine the outcome from the final `result` / `error` / `cancelled` frame; on failure read both the process exit code and `data.code`.
+- `LOGIN_REQUIRED` (exit 2): site login missing; have the user log in, then retry — do not retry or skip on your own.
 - `CAPTCHA` (exit 15): stop retrying; wait and try later, or switch IP / browser environment.
 - `RUNTIME_TAB_ERROR` (exit 16): the extension runtime page is unavailable.
 - `--param __probe=true`: zero-side-effect check that a business method is registered.

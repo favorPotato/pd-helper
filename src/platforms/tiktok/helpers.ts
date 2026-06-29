@@ -10,6 +10,7 @@ export class UiHelper {
         onBridge: () => Promise<void>
         onDownload: () => Promise<void>
         onCollect: () => Promise<void>
+        onCollectUserList: () => Promise<void>
         onBatchCollect: () => Promise<void>
     }) {
         if (!UiHelper.overlay) {
@@ -29,9 +30,14 @@ export class UiHelper {
             await handlers.onDownload();
         }, false);
 
-        UiHelper.overlay.addButton('采集', '#0ea5e9', async (e) => {
+        UiHelper.overlay.addButton('视频采集', '#0ea5e9', async (e) => {
             e.stopPropagation();
             await handlers.onCollect();
+        }, false);
+
+        UiHelper.overlay.addButton('粉关采集', '#2563eb', async (e) => {
+            e.stopPropagation();
+            await handlers.onCollectUserList();
         }, false);
 
         UiHelper.overlay.addButton('批量采集', '#ff6b35', async (e) => {
@@ -77,8 +83,10 @@ export class UiHelper {
         UiHelper.overlay.setButtonEnabled('转发', isVideo && !UiHelper.batchCollecting);
         UiHelper.overlay.setButtonVisible('下载', isVideo);
         UiHelper.overlay.setButtonEnabled('下载', isVideo && !UiHelper.batchCollecting);
-        UiHelper.overlay.setButtonVisible('采集', isProfile);
-        UiHelper.overlay.setButtonEnabled('采集', isProfile && !UiHelper.batchCollecting);
+        UiHelper.overlay.setButtonVisible('视频采集', isProfile);
+        UiHelper.overlay.setButtonEnabled('视频采集', isProfile && !UiHelper.batchCollecting);
+        UiHelper.overlay.setButtonVisible('粉关采集', isProfile);
+        UiHelper.overlay.setButtonEnabled('粉关采集', isProfile && !UiHelper.batchCollecting);
         UiHelper.overlay.setButtonVisible('批量采集', isHome);
         UiHelper.overlay.setButtonEnabled('批量采集', isHome && !UiHelper.batchCollecting);
         UiHelper.overlay.setButtonText('批量采集', UiHelper.batchCollecting ? '批量采集中...' : '批量采集');

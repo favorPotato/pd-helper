@@ -21,6 +21,7 @@ import {
     TK_BATCH_COLLECT_REMOTE,
     TK_BRIDGE_TO_IG_REMOTE,
     TK_COLLECT_REMOTE,
+    TK_COLLECT_USER_LIST_REMOTE,
     TK_FETCH_VIDEO_REMOTE,
     TK_DOWNLOAD_VIDEO_REMOTE,
     TK_PROFILE_METRICS_REMOTE
@@ -207,6 +208,28 @@ const tkCollect: DispatchFn = async (params, ctx) => {
         maxDurationSec: numParam(params.maxDurationSec),
         filenamePrefix: strParam(params.filenamePrefix),
         sortType: params.sortType === 'hot' ? 'hot' : 'recent'
+    })
+}
+
+const tkCollectUserList: DispatchFn = async (params, ctx) => {
+    const username = strParam(params.username)
+    const secUid = strParam(params.secUid)
+    const listType = strParam(params.listType)
+    if (!username && !secUid) {
+        ctx.setTabId(null)
+        ctx.fail('INVALID_PARAM', 'username or secUid required')
+        return
+    }
+    if (listType !== 'followers' && listType !== 'following') {
+        ctx.setTabId(null)
+        ctx.fail('INVALID_PARAM', 'listType must be followers or following')
+        return
+    }
+    await dispatchRemoteToTab(ctx, PLATFORM_TIKTOK, TK_COLLECT_USER_LIST_REMOTE, {
+        username,
+        secUid,
+        listType,
+        maxCount: numParam(params.maxCount) ?? 50
     })
 }
 
@@ -567,6 +590,7 @@ const exolytMarkCollected: DispatchFn = async (params, ctx) => {
 const DISPATCHERS: Readonly<Record<string, DispatchFn>> = {
     tkProfileMetrics,
     tkCollect,
+    tkCollectUserList,
     tkFetchVideo,
     exolytPackVideo,
     tkBatchCollect,

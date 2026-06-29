@@ -73,6 +73,38 @@ export interface TikTokCommentSummary {
     hasFilteredComments: boolean
 }
 
+export type TikTokUserListType = 'followers' | 'following'
+
+export interface TikTokListUser {
+    id: string
+    uniqueId: string
+    secUid: string
+    nickname: string
+    signature: string
+    avatarMedium: string
+    verified: boolean
+    privateAccount: boolean
+    secret: boolean
+    ttSeller: boolean
+    relation: number
+    followerCount: number
+    followingCount: number
+    heartCount: number
+    videoCount: number
+    diggCount: number
+    friendCount: number
+}
+
+export interface TikTokUserListResult {
+    users: TikTokListUser[]
+    total: number
+    count: number
+    hasMore: boolean
+    truncatedByMaxCount: boolean
+    apiTruncated: boolean
+    listType: TikTokUserListType
+}
+
 export interface TikTokVideo {
     videoId: string
     desc: string

@@ -26,6 +26,7 @@ import {
     TK_DOWNLOAD_VIDEO_REMOTE,
     TK_PROFILE_METRICS_REMOTE,
     TK_COLLECT_REMOTE,
+    TK_COLLECT_USER_LIST_REMOTE,
     TK_FETCH_VIDEO_REMOTE,
     TK_PREPARE_PAGE_CONTEXT
 } from '../../shared/remote-collect'
@@ -57,6 +58,7 @@ let downloadInProgress = false
 let bridgeInProgress = false
 let collectInProgress = false
 let batchCollectInProgress = false
+let userListCollectInProgress = false
 
 function initTikTokMessageHandler(): void {
     if (window.__TT_BRIDGE_HANDLER_LOADED__) return
@@ -137,6 +139,33 @@ function initTikTokMessageHandler(): void {
                     sendResponse({ok: false, error: Collector.formatError(error)})
                 }
             })()
+            return true
+        }
+
+        if (msg.type === TK_COLLECT_USER_LIST_REMOTE) {
+            const taskId = typeof msg.taskId === 'string' && msg.taskId.length ? msg.taskId : ''
+            const listType = msg.listType === 'followers' || msg.listType === 'following' ? msg.listType : ''
+            if (!taskId) {
+                sendResponse({ok: false, error: 'taskId required'})
+                return true
+            }
+            if (!listType) {
+                sendResponse({ok: false, error: 'invalid listType'})
+                return true
+            }
+
+            sendResponse({ok: true, accepted: true})
+            void runFireAndForget(taskId, async (rt) => {
+                rt.throwIfCancelled()
+                const result = await Collector.collectUserListByUsername({
+                    username: typeof msg.username === 'string' ? msg.username : '',
+                    secUid: typeof msg.secUid === 'string' ? msg.secUid : '',
+                    listType,
+                    maxCount: typeof msg.maxCount === 'number' ? msg.maxCount : 50
+                }, rt)
+                rt.throwIfCancelled()
+                return result
+            })
             return true
         }
 
@@ -548,6 +577,77 @@ async function collectProfile(): Promise<void> {
     }
 }
 
+async function collectProfileUserList(): Promise<void> {
+    if (userListCollectInProgress) return
+    if (!UrlHelper.isProfilePage()) return
+
+    const username = UrlHelper.getUsernameFromProfilePage()
+    if (!username) return
+
+    let label = '粉关采集'
+    userListCollectInProgress = true
+    await UiHelper.setBatchCollecting(true)
+    try {
+        const params = await showDialog({
+            title: '采集粉丝/关注列表',
+            fields: [
+                {key: 'listType', label: '列表类型', type: 'select', value: 'followers', options: [
+                    {value: 'followers', label: '粉丝列表'},
+                    {value: 'following', label: '关注列表'}
+                ]},
+                {key: 'maxCount', label: '采集数量', type: 'number', value: 50, min: 1, step: 1}
+            ],
+            confirmText: '开始采集'
+        })
+        if (!params) return
+
+        const listType = params.listType === 'following' ? 'following' : 'followers'
+        const maxCountValue = Number(params.maxCount)
+        const maxCount = Number.isFinite(maxCountValue) && maxCountValue > 0 ? Math.floor(maxCountValue) : 50
+        label = listType === 'followers' ? '粉丝列表' : '关注列表'
+        UiHelper.log(`开始采集${label}...`)
+        const response = await chrome.runtime.sendMessage({
+            type: 'pd:invoke',
+            method: 'tkCollectUserList',
+            params: {
+                username,
+                listType,
+                maxCount
+            }
+        }) as {ok?: boolean; result?: unknown; code?: string; message?: string} | undefined
+
+        if (!response?.ok || !response.result || typeof response.result !== 'object') {
+            const message = truncateError(response?.message || '未知错误', 300)
+            UiHelper.log(`${label}采集失败: ${message}`)
+            return
+        }
+
+        const result = response.result as {
+            users?: unknown[]
+            count?: unknown
+            total?: unknown
+            hasMore?: unknown
+            truncatedByMaxCount?: unknown
+            apiTruncated?: unknown
+        }
+        const users = Array.isArray(result.users) ? result.users : []
+        const payload = JSON.stringify(users, null, 2)
+        await downloadBlob(`${username}-${listType}.json`, new Blob([payload], {type: 'application/json'}))
+        const count = users.length
+        const total = typeof result.total === 'number' ? result.total : count
+        const suffix = result.truncatedByMaxCount === true
+            ? '，已达到 maxCount 上限'
+            : (result.apiTruncated === true ? '，接口返回截断' : (result.hasMore === true ? '，仍有后续分页' : ''))
+        UiHelper.log(`${label}采集完成: ${count}/${total}${suffix}`)
+    } catch (error) {
+        const message = truncateError(error instanceof Error ? error.message : String(error), 300)
+        UiHelper.log(`${label}采集失败: ${message}`)
+    } finally {
+        userListCollectInProgress = false
+        await UiHelper.setBatchCollecting(false)
+    }
+}
+
 async function batchCollectFromPool(): Promise<void> {
     if (batchCollectInProgress || collectInProgress) return
 
@@ -600,6 +700,7 @@ export function setup(): void {
         onDownload: downloadVideo,
         onBridge: bridgeToInstagram,
         onCollect: collectProfile,
+        onCollectUserList: collectProfileUserList,
         onBatchCollect: batchCollectFromPool
     })
 }

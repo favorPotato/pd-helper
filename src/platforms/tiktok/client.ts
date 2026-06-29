@@ -1,4 +1,5 @@
 import {detectTkCaptchaWall} from './captcha-detect'
+import {withPdCode} from '../../shared/cli-bridge/cs-runtime'
 
 export interface BinaryResponse {
     bytes: ArrayBuffer
@@ -18,6 +19,14 @@ export interface CommentPageResponse {
     cursor: number
     hasMore: boolean
     hasFilteredComments: boolean
+}
+
+export interface UserListPageResponse {
+    users: unknown[]
+    total: number
+    minCursor: string
+    hasMore: boolean
+    isTruncated: boolean
 }
 
 export interface RequestEnv {
@@ -93,7 +102,7 @@ function parseJsonText<T>(text: string, contentType: string): T {
         throw new Error('响应体为空')
     }
     if (detectTkCaptchaText(trimmed)) {
-        throw new Error(`${TK_CAPTCHA_MARKER} TikTok API 命中人机验证`)
+        throw withPdCode(new Error(`${TK_CAPTCHA_MARKER} TikTok API 命中人机验证`), 'CAPTCHA')
     }
 
     const normalizedType = contentType.toLowerCase()
@@ -210,10 +219,13 @@ async function pageFetch(url: string, init: RequestInit = {}, timeoutMs = 15000)
     })
 
     if (detectTkCaptchaText(payload.text || '')) {
-        throw new Error(`${TK_CAPTCHA_MARKER} TikTok 响应命中人机验证`)
+        throw withPdCode(new Error(`${TK_CAPTCHA_MARKER} TikTok 响应命中人机验证`), 'CAPTCHA')
     }
 
     if (!payload.ok) {
+        if (payload.status === 429) {
+            throw withPdCode(new Error('[RATE_LIMITED] TikTok 请求被限流: 429'), 'RATE_LIMITED')
+        }
         throw new Error(`请求失败: ${payload.status || 'unknown'}`)
     }
 
@@ -295,13 +307,34 @@ function getHasMore(response: ApiObject): boolean {
     return false
 }
 
+function getIsTruncated(response: ApiObject): boolean {
+    if (typeof response.isTruncated === 'boolean') return response.isTruncated
+    if (typeof response.is_truncated === 'boolean') return response.is_truncated
+    if (typeof response.isTruncated === 'number') return response.isTruncated === 1
+    if (typeof response.is_truncated === 'number') return response.is_truncated === 1
+    return false
+}
+
 function getCursor(response: ApiObject): number {
     return toNumber(response.cursor)
+}
+
+function getMinCursor(response: ApiObject): string {
+    const value = response.minCursor ?? response.min_cursor
+    if (typeof value === 'string') return value
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+    return '0'
 }
 
 function getItemList(response: ApiObject): unknown[] {
     if (Array.isArray(response.itemList)) return response.itemList
     if (Array.isArray(response.item_list)) return response.item_list
+    return []
+}
+
+function getUserList(response: ApiObject): unknown[] {
+    if (Array.isArray(response.userList)) return response.userList
+    if (Array.isArray(response.user_list)) return response.user_list
     return []
 }
 
@@ -413,5 +446,41 @@ export async function fetchCommentPage(
         cursor: getCursor(json),
         hasMore: getHasMore(json),
         hasFilteredComments: toNumber(json.has_filtered_comments) === 1
+    }
+}
+
+export async function fetchUserListPage(
+    secUid: string,
+    minCursor: string,
+    requestEnv: RequestEnv,
+    referrer: string,
+    scene: number
+): Promise<UserListPageResponse> {
+    const url = buildCommonApiUrl('/api/user/list/', requestEnv)
+    url.searchParams.set('count', '30')
+    url.searchParams.set('maxCursor', '0')
+    url.searchParams.set('minCursor', minCursor)
+    url.searchParams.set('scene', String(scene))
+    url.searchParams.set('secUid', secUid)
+
+    const payload = await pageFetch(url.toString(), {
+        method: 'GET',
+        mode: 'cors',
+        credentials: 'include',
+        referrer,
+        headers: {accept: 'application/json, text/plain, */*'}
+    })
+    const json = parseJsonText<ApiObject>(payload.text, payload.contentType)
+    const bizCode = getBizCode(json)
+    if (bizCode !== 0) {
+        throw new Error(`用户列表接口业务码异常: ${bizCode}`)
+    }
+
+    return {
+        users: getUserList(json),
+        total: toNumber(json.total),
+        minCursor: getMinCursor(json),
+        hasMore: getHasMore(json),
+        isTruncated: getIsTruncated(json)
     }
 }

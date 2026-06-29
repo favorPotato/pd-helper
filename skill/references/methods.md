@@ -63,6 +63,14 @@ No login required. Except for `tkBatchCollect`, all dispatch to an already-open 
 - Params: `username` (required), `maxVideoCount` (target selected count, default 10), `fromTs?`, `toTs?` (ms-timestamp filter range), `startYear?`, `endYear?` (fallback only when fromTs/toTs are absent, mapped to that year's 1/1–12/31; default is the last 90 days), `minLikeRate` (default 0.02), `maxDurationSec` (default 60), `filenamePrefix?`, `sortType` (`recent`|`hot`, default recent)
 - Behavior: collects one account's videos and packages a download, auto-loading already-collected IDs for dedup. Produces an archive (per-video json + top5 comments).
 
+### tkCollectUserList
+- Host: site tab
+- CLI: `call tkCollectUserList --param username=<uniqueId> --param listType=followers --param maxCount=50`
+- Params: one of `username?` / `secUid?` is required; `listType` is required and must be `followers` / `following`; `maxCount` defaults to 50 and stops collection at the limit.
+- Behavior: collects one account's follower / following list. Result includes `users[]`, `count`, `total`, `hasMore`, `truncatedByMaxCount`, `apiTruncated`, `listType`.
+- Note: passing `secUid` directly uses the current TikTok page request environment; prefer `username` for normal calls.
+- Error codes: `INVALID_PARAM`, `TAB_CLOSED`, `CAPTCHA`, `RATE_LIMITED`, `UNKNOWN_ERROR`.
+
 ### tkBatchCollect
 - Host: **pd-runtime page**. The extension's `runtime.html` hosts the long task and creates its own independent TikTok execution tab (no pre-opened tiktok tab needed).
 - Build requirement: the extension build must include `runtime.html` / `runtime.js`.

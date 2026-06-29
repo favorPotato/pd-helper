@@ -13,10 +13,22 @@ import {
 import {truncateError} from '../../shared/errors'
 import {sleepRandom} from '../../shared/timing'
 import {enqueueUpsertVideos} from '../../shared/sheets-sync'
+import {withPdCode} from '../../shared/cli-bridge/cs-runtime'
+import {sleepForPage, sleepAfterError} from '../../shared/collect/throttle'
+import {makeCircuitBreaker} from '../../shared/collect/circuit-breaker'
 import {Downloader, getDownloadCandidatesFromItem, type DownloadCandidate} from './downloader'
 import type {CommentPageResponse, RequestEnv} from './client'
-import {fetchCommentPage, fetchVideoPage, fetchHtml} from './client'
-import type {TikTokComment, TikTokCommentSummary, TikTokProfileCollection, TikTokUser, TikTokVideo} from './types'
+import {fetchCommentPage, fetchUserListPage, fetchVideoPage, fetchHtml} from './client'
+import type {
+    TikTokComment,
+    TikTokCommentSummary,
+    TikTokListUser,
+    TikTokProfileCollection,
+    TikTokUser,
+    TikTokUserListResult,
+    TikTokUserListType,
+    TikTokVideo
+} from './types'
 import {UrlHelper} from './helpers'
 import {detectTkCaptchaWall} from './captcha-detect'
 
@@ -47,10 +59,17 @@ interface CollectedVideo extends TikTokVideo {
 }
 
 type CollectLogFn = (message: string) => void | Promise<void>
+type CancelCheckFn = () => void
+
+const TK_ROOT_REFERRER = 'https://www.tiktok.com/'
 
 async function emitCollectLog(logger: CollectLogFn | undefined, message: string): Promise<void> {
     if (!logger) return
     await logger(message)
+}
+
+function invalidParamError(message: string): Error {
+    return withPdCode(new Error(`[INVALID_PARAM] ${message}`), 'INVALID_PARAM')
 }
 
 export function asObject(value: unknown): AnyObject | null {
@@ -110,15 +129,15 @@ function findSecUidCandidates(jsonData: unknown): Array<{ secUid: string; unique
 
 function pickSecUid(candidates: Array<{ secUid: string; uniqueId: string }>, username: string): string {
     if (candidates.length === 0) {
-        throw new Error('未找到 secUid')
+        throw invalidParamError('未找到 secUid')
     }
     const exact = candidates.filter((candidate) => candidate.uniqueId.toLowerCase() === username.toLowerCase())
     if (exact.length === 1) return exact[0].secUid
-    if (exact.length > 1) throw new Error('匹配 uniqueId 的 secUid 存在多个候选')
+    if (exact.length > 1) throw invalidParamError('匹配 uniqueId 的 secUid 存在多个候选')
 
     const uniqueValues = Array.from(new Set(candidates.map((candidate) => candidate.secUid)))
     if (uniqueValues.length !== 1) {
-        throw new Error('secUid 候选不唯一')
+        throw invalidParamError('secUid 候选不唯一')
     }
     return uniqueValues[0]
 }
@@ -167,6 +186,96 @@ export function buildRequestEnvFromAppContext(appContext: AnyObject | null): Req
         deviceId: String(ctx.wid || '7605966330110543378'),
         region: String(ctx.region || '')
     }
+}
+
+function parseUniversalData(html: string): AnyObject | null {
+    const scriptText = extractScriptContentById(html, '__UNIVERSAL_DATA_FOR_REHYDRATION__')
+        || extractScriptContentById(html, '__UNIVERSAL_DATA_FOR_VAR__')
+    if (!scriptText) return null
+    try {
+        return asObject(JSON.parse(scriptText))
+    } catch (error) {
+        throw invalidParamError(`主页 JSON 解析失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+}
+
+function parseAppContextFromHtml(html: string): AnyObject | null {
+    const root = parseUniversalData(html)
+    const scope = asObject(root?.__DEFAULT_SCOPE__)
+    return asObject(scope?.['webapp.app-context'])
+}
+
+function toBoolean(value: unknown): boolean {
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'number') return value === 1
+    if (typeof value === 'string') return value === '1' || value.toLowerCase() === 'true'
+    return false
+}
+
+function getStringField(obj: AnyObject | null, ...keys: string[]): string {
+    if (!obj) return ''
+    for (const key of keys) {
+        const value = obj[key]
+        if (typeof value === 'string' && value) return value
+    }
+    return ''
+}
+
+function getNestedObject(source: AnyObject | null, key: string): AnyObject | null {
+    return asObject(source?.[key])
+}
+
+function mapListUser(raw: unknown): TikTokListUser | null {
+    const node = asObject(raw)
+    if (!node) return null
+    const userInfo = getNestedObject(node, 'userInfo') || getNestedObject(node, 'user_info')
+    const user = getNestedObject(node, 'user')
+        || getNestedObject(userInfo, 'user')
+        || node
+    const statsV2 = getNestedObject(node, 'statsV2') || {}
+    const secUid = getStringField(user, 'secUid', 'sec_uid')
+    const uniqueId = getStringField(user, 'uniqueId', 'unique_id')
+    const id = getStringField(user, 'id', 'uid')
+    if (!secUid && !uniqueId && !id) return null
+
+    return {
+        id,
+        uniqueId,
+        secUid,
+        nickname: getStringField(user, 'nickname'),
+        signature: getStringField(user, 'signature'),
+        avatarMedium: getStringField(user, 'avatarMedium', 'avatar_medium'),
+        verified: toBoolean(user.verified),
+        privateAccount: toBoolean(user.privateAccount ?? user.private_account),
+        secret: toBoolean(user.secret),
+        ttSeller: toBoolean(user.ttSeller),
+        relation: toNumber(user.relation ?? node.relation),
+        followerCount: toNumber(statsV2.followerCount),
+        followingCount: toNumber(statsV2.followingCount),
+        heartCount: toNumber(statsV2.heartCount || statsV2.heart),
+        videoCount: toNumber(statsV2.videoCount),
+        diggCount: toNumber(statsV2.diggCount),
+        friendCount: toNumber(statsV2.friendCount)
+    }
+}
+
+function getUserListScene(listType: TikTokUserListType): number {
+    return listType === 'followers' ? 67 : 21
+}
+
+async function loadCurrentPageRequestEnv(): Promise<RequestEnv> {
+    const appContext = parseAppContextFromHtml(document.documentElement.outerHTML)
+    if (appContext) {
+        return buildRequestEnvFromAppContext(appContext)
+    }
+
+    const html = await fetchHtml(window.location.href)
+    const fallbackAppContext = parseAppContextFromHtml(html)
+    if (fallbackAppContext) {
+        return buildRequestEnvFromAppContext(fallbackAppContext)
+    }
+
+    throw invalidParamError('当前页缺少 app-context，无法为 secUid 直传路径构造 requestEnv')
 }
 
 function extractHashtags(item: AnyObject): string[] {
@@ -427,6 +536,10 @@ function detectTkCaptcha(html: string): boolean {
     return detectTkCaptchaWall(html)
 }
 
+function detectTkLoginRequired(html: string): boolean {
+    return /login-context|login-kit|login-modal|log in to tiktok|login to tiktok/i.test(html)
+}
+
 async function loadProfileContext(username: string): Promise<{
     username: string;
     user: TikTokUser;
@@ -438,14 +551,15 @@ async function loadProfileContext(username: string): Promise<{
     const profileUrl = buildProfileUrl(normalizedUsername)
 
     const html = await fetchHtml(profileUrl)
-    const scriptText = extractScriptContentById(html, '__UNIVERSAL_DATA_FOR_REHYDRATION__')
-        || extractScriptContentById(html, '__UNIVERSAL_DATA_FOR_VAR__')
-    if (!scriptText) {
+    const universalData = parseUniversalData(html)
+    if (!universalData) {
         if (detectTkCaptcha(html)) throw new TkCaptchaError(`@${normalizedUsername} 命中 TikTok 人机验证`)
-        throw new Error('未找到主页 JSON 容器')
+        if (detectTkLoginRequired(html)) {
+            throw withPdCode(new Error('[LOGIN_REQUIRED] TikTok 主页需登录态才能访问'), 'LOGIN_REQUIRED')
+        }
+        throw invalidParamError('主页缺少 JSON 容器')
     }
-
-    const jsonData = JSON.parse(scriptText)
+    const jsonData = universalData
 
     const secUid = pickSecUid(findSecUidCandidates(jsonData), normalizedUsername)
     const {user, requestEnv} = buildRequestEnv(jsonData, normalizedUsername, secUid)
@@ -632,6 +746,89 @@ async function collectVideos(
     }
 }
 
+async function collectUserList(
+    secUid: string,
+    requestEnv: RequestEnv,
+    referrer: string,
+    scene: number,
+    maxCount: number,
+    throwIfCancelled: CancelCheckFn,
+    onLog?: CollectLogFn
+): Promise<{ users: TikTokListUser[]; total: number; hasMore: boolean; truncatedByMaxCount: boolean; apiTruncated: boolean }> {
+    const users: TikTokListUser[] = []
+    const seen = new Set<string>()
+    const seenCursors = new Set<string>(['0'])
+    let minCursor = '0'
+    let total = 0
+    let hasMore = false
+    let truncatedByMaxCount = false
+    let apiTruncated = false
+    let page = 0
+
+    const breaker = makeCircuitBreaker(3)
+
+    while (users.length < maxCount) {
+        throwIfCancelled()
+        page += 1
+        await emitCollectLog(onLog, `拉取用户列表第 ${page} 页...`)
+        let pageResult
+        try {
+            pageResult = await fetchUserListPage(secUid, minCursor, requestEnv, referrer, scene)
+            breaker.recordOk()
+        } catch (error) {
+            if ((error as {pdCode?: string}).pdCode !== 'RATE_LIMITED') throw error
+            breaker.recordErr(error)
+            await emitCollectLog(onLog, `第 ${page} 页被限流，退避后重试...`)
+            await sleepAfterError([30_000, 60_000])
+            page -= 1
+            continue
+        }
+        if (pageResult.total > 0 || total === 0) {
+            total = pageResult.total
+        }
+        hasMore = pageResult.hasMore
+
+        if (page === 1 && pageResult.users.length === 0 && pageResult.total > 0) {
+            throw new Error(`首页返回空 userList，但 total=${pageResult.total}`)
+        }
+        if (pageResult.users.length === 0) break
+
+        for (let index = 0; index < pageResult.users.length; index += 1) {
+            const rawUser = pageResult.users[index]
+            const mapped = mapListUser(rawUser)
+            if (!mapped) continue
+            const key = mapped.secUid || mapped.id || mapped.uniqueId
+            if (!key || seen.has(key)) continue
+            seen.add(key)
+            users.push(mapped)
+            if (users.length >= maxCount) {
+                truncatedByMaxCount = pageResult.hasMore || total > users.length || index < pageResult.users.length - 1
+                break
+            }
+        }
+
+        if (truncatedByMaxCount) break
+        if (!pageResult.hasMore) break
+        if (pageResult.isTruncated) {
+            apiTruncated = true
+            break
+        }
+        if (!pageResult.minCursor || pageResult.minCursor === minCursor) break
+        if (seenCursors.has(pageResult.minCursor)) break
+        seenCursors.add(pageResult.minCursor)
+        minCursor = pageResult.minCursor
+        await sleepForPage(page + 1, (msg) => { void emitCollectLog(onLog, msg) })
+    }
+
+    return {
+        users,
+        total,
+        hasMore,
+        truncatedByMaxCount,
+        apiTruncated
+    }
+}
+
 async function downloadCollectedVideos(
     videos: CollectedVideo[],
     targetCount: number,
@@ -685,6 +882,60 @@ async function resolveProfile(username: string, onLog?: CollectLogFn) {
 }
 
 export class Collector {
+    static async collectUserListByUsername(
+        input: {
+            username?: string
+            secUid?: string
+            listType: TikTokUserListType
+            maxCount: number
+        },
+        rt: { throwIfCancelled(): void; log(message: string): void }
+    ): Promise<TikTokUserListResult> {
+        const listType = input.listType
+        const maxCount = Number.isFinite(input.maxCount) && input.maxCount > 0 ? Math.floor(input.maxCount) : 50
+        const directSecUid = String(input.secUid || '').trim()
+        const directUsername = String(input.username || '').trim().replace(/^@/, '')
+        const scene = getUserListScene(listType)
+
+        let secUid = directSecUid
+        let requestEnv: RequestEnv
+        let referrer = TK_ROOT_REFERRER
+
+        if (secUid) {
+            requestEnv = await loadCurrentPageRequestEnv()
+        } else {
+            if (!directUsername) {
+                throw invalidParamError('username 或 secUid 至少提供一个')
+            }
+            await emitCollectLog((message) => rt.log(message), `读取主页信息: @${directUsername}`)
+            const ctx = await loadProfileContext(directUsername)
+            await emitCollectLog((message) => rt.log(message), `主页信息就绪: @${ctx.username}`)
+            secUid = ctx.user.secUid
+            requestEnv = ctx.requestEnv
+            referrer = ctx.profileUrl
+        }
+
+        const result = await collectUserList(
+            secUid,
+            requestEnv,
+            referrer,
+            scene,
+            maxCount,
+            () => rt.throwIfCancelled(),
+            (message) => rt.log(message)
+        )
+
+        return {
+            users: result.users,
+            total: result.total,
+            count: result.users.length,
+            hasMore: result.hasMore,
+            truncatedByMaxCount: result.truncatedByMaxCount,
+            apiTruncated: result.apiTruncated,
+            listType
+        }
+    }
+
     static async collectProfileByUsername(
         username: string,
         maxVideoCount: number,
