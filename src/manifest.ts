@@ -1,8 +1,8 @@
 export default {
     manifest_version: 3,
     name: 'pd-helper',
-    version: '0.10.0',
-    description: 'instagram 运营助手',
+    version: '0.10.1',
+    description: 'pd-helper',
     incognito: 'split',
     permissions: [
         'scripting',
